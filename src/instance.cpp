@@ -32,6 +32,7 @@ Instance::Instance(int argc, char **argv) {
     load_pvalue = false;
     three_fix_one_alter = false;
     quard = false;
+    network = false;
 
     override_file = false;
 
@@ -151,6 +152,31 @@ long long Instance::solve() {
             std::cout << "TREE-QMC was not compiled with tree of blob options!" << std::endl;
             exit(1);
         #endif  // ENABLE_TOB
+    } else if (network) {
+
+        #if ENABLE_TOB
+        get_annotation_tree();
+        
+        std::cout << "Loading species tree with p-values" << root_str << std::endl;
+        
+        
+        
+        if (iter_limit_blob == std::numeric_limits<unsigned long int>::max()) {
+                    iter_limit_blob = 2 * dict->size() * dict->size();
+                    std::cout << "Setting blob iteration limit to 2*ntaxa^2 = " << iter_limit_blob << std::endl;
+                }
+
+        Tree *hybrid_tree_output = new SpeciesTree(annotation_tree, dict, alpha, beta, input, iter_limit_blob);
+        
+        
+
+        output_net = new Network(hybrid_tree_output, dict);
+
+        // output->compute_hybrid_node(input,dict, hybrid_blob_nodes, iter_limit_blob);
+        // output->compute_pivot(input, dict,hybrid_blob_nodes, iter_limit_blob);
+        // output->circle_sorting(input,iter_limit_blob,hybrid_blob_nodes);
+        #endif // ENABLE_TOB
+
     } else {
         if (stree_file != "") {
             std::cout << "Loading species tree" << root_str << std::endl;
@@ -161,14 +187,20 @@ long long Instance::solve() {
             output = new SpeciesTree(input, dict, mode, iter_limit, output_file);
         }
     }
+    
 
     if (root_str != "") {
         std::cout << "Rooting species tree at " << root_str << std::endl;
         output->root_at_clade(outgroup_taxon_set);
     }
 
-    std::cout << "Printing output tree:" << std::endl;
-    std::cout << output->to_string_basic() << std::endl;
+    std::cout << "Printing output tree/network:" << std::endl;
+    if (!network) {
+        std::cout << output->to_string_basic() << std::endl;
+    } else {
+        std::cout << output_net->to_string_basic() << std::endl;
+    }
+    
 
     if (!load_pvalue && (store_pvalue || blob)) {
         #if ENABLE_TOB
@@ -195,7 +227,7 @@ long long Instance::solve() {
         output = tmp;
     }
     #endif  // ENABLE_TOB
-
+    
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
@@ -287,6 +319,8 @@ void Instance::output_solution() {
             #if ENABLE_TOB
             else if (store_pvalue) 
                 fout << output->to_string_pvalue() << std::endl;
+            else if (network)
+                fout << output_net->to_string_basic() << std::endl;
             #endif  // ENABLE_TOB
             else 
                 fout << output->to_string_basic() << std::endl;
@@ -301,6 +335,8 @@ void Instance::output_solution() {
     #if ENABLE_TOB
     else if (store_pvalue) 
         std::cout << output->to_string_pvalue() << std::endl;
+    else if (network)
+        std::cout << output_net->to_string_basic() << std::endl;
     #endif  // ENABLE_TOB
     else
         std::cout << output->to_string_basic() << std::endl;
@@ -368,6 +404,9 @@ int Instance::parse(int argc, char **argv) {
         else if (opt == "--blob") {
             blob = true;
         }
+        else if (opt == "--network") {
+            network = true;
+        }
         else if (opt == "--3f1a") {
             three_fix_one_alter = true;
         }
@@ -399,6 +438,13 @@ int Instance::parse(int argc, char **argv) {
             if (i < argc - 1) {
                 iter_limit_blob = std::stoi(argv[++ i]);
             }
+        }
+        else if (opt == "--at") {
+            if (i < argc - 1) {
+                annotation_tree_file = argv[++ i];
+            }
+            std::cout << "Loading annotation tree from " << annotation_tree_file << std::endl;
+            
         }
         else if (opt == "-q" || opt == "--supportonly") {
             score_mode = "1";
@@ -826,6 +872,20 @@ void Instance::input_trees() {
     }
 
     fin.close();
+}
+
+void Instance::get_annotation_tree() {
+    std::ifstream fin(annotation_tree_file);
+    if (fin.fail()) {
+        std::cout << "\nERROR: Unable to open " << annotation_tree_file << std::endl;
+        exit(1);
+    }
+    std::string line;
+    std::getline(fin, line);
+    fin.close();
+
+    annotation_tree = new Tree(line, dict, indiv2taxon, support_low, support_default);
+    std::cout << "Annotation tree has " << annotation_tree->size() << " taxa." << std::endl;
 }
 
 

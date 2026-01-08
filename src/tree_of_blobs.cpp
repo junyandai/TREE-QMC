@@ -21,6 +21,595 @@ void get_qCFs(std::vector<Tree *> &input, index_t *indices, weight_t *qCFs) {
 }
 
 
+std::pair<Node *, std::vector<index_t>> SpeciesTree::hybrid_info_tree(Node *root, Dict *dict, std::unordered_set<Node *> &false_positive_alpha, std::unordered_set<Node *> &false_positive_beta) {
+    std::vector<index_t> minimizers = {};
+    if (root->children.size() == 0) {
+        // std::cout << "Processing leaf node " << root->index << std::endl;
+        Node *new_root = new Node(root->index, false);
+        index2node[new_root->index] = new_root;
+        return {new_root, minimizers};
+    } else {
+        
+        // std::cout << "Processing node " << root->index << " with " << root->children.size() << " children" << std::endl;
+        bool in_false_positive_alpha = false_positive_alpha.find(root) != false_positive_alpha.end();
+        
+        bool in_false_positive_beta = false_positive_beta.find(root) != false_positive_beta.end();
+        
+        Node *new_root = new Node(pseudonym(), in_false_positive_alpha || in_false_positive_beta);
+
+        if (in_false_positive_alpha) {
+            minimizers.insert(minimizers.end(), std::begin(root->minimizer), std::end(root->minimizer));
+        }
+
+        for (Node *child : root->children) {
+            // main the child and minimizers that no place to go 
+            auto [new_child, child_minimizers] = hybrid_info_tree(child, dict, false_positive_alpha, false_positive_beta);
+            
+            
+            if (! new_child->isfake) {
+                new_root->children.push_back(new_child);
+                // then the minimizer has a place to go 
+                new_child->minimizers = std::move(child_minimizers);
+                index2node[new_child->index] = new_child;
+            }
+            else {
+                for (Node *grand_child : new_child->children) 
+                    new_root->children.push_back(grand_child);
+                
+                minimizers.insert(minimizers.end(), child_minimizers.begin(), child_minimizers.end());
+                
+                new_child->children.clear();
+                delete new_child;
+            }
+        }
+        for (Node *new_child : new_root->children) 
+            new_child->parent = new_root;
+        return {new_root, minimizers};
+
+    }
+}
+
+std::vector<index_t> SpeciesTree::compute_taxon2parition_mapping(Node *root, Dict *dict, std::vector<Node *> &hybrid_blob_nodes, std::unordered_set<Node *> & full_leaf_nodes) {
+    std::vector<index_t> taxon_below;
+    if (root->children.size() == 0) {
+        taxon_below.push_back(root->index);
+    } else {
+        index_t partition_id = 0;
+        std::unordered_set<index_t > seen_taxa;
+        for (Node *child : root->children) {
+            std::vector<index_t> child_taxon_below = compute_taxon2parition_mapping(child, dict, hybrid_blob_nodes, full_leaf_nodes);
+            root->multi_partitions.push_back(child_taxon_below);
+            for (index_t taxon : child_taxon_below) {
+                taxon_below.push_back(taxon);
+                root->taxon2partition_id_mapping[taxon] = partition_id;
+            }
+            
+            seen_taxa.insert(child_taxon_below.begin(), child_taxon_below.end());
+            
+            partition_id++;
+        }
+
+        
+        bool flag = true;
+        for (Node *taxon : full_leaf_nodes) {
+            if (seen_taxa.find(taxon->index) == seen_taxa.end()) {
+                if (flag) {
+                    root->multi_partitions.push_back({}); // outside taxa partition
+                    flag = false;
+                }
+                root->taxon2partition_id_mapping[taxon->index] = partition_id; // outside taxa
+                root->multi_partitions.back().push_back(taxon->index);
+            }
+        }
+
+
+        if (root->children.size() > 2) {
+            hybrid_blob_nodes.push_back(root);
+            // printing out the minimizers
+            std::cout << "Hybrid blob id " << root->index << " with partitions: ";
+            for (index_t i = 0; i < root->multi_partitions.size(); i ++) {
+                std::cout << "[";
+                for (index_t taxon : root->multi_partitions[i]) {
+                    std::cout << dict->index2label(taxon) << " ";
+                }
+                std::cout << "] ";
+            }
+            std::cout << " and minimizers: ";
+            for (index_t taxon : root->minimizers) {
+                std::cout << dict->index2label(taxon) << " ";
+            }
+            std::cout << std::endl;
+            std::cout << "the total size of minimizers is " << root->minimizers.size() << std::endl;
+        }
+        
+    }
+
+    return taxon_below;
+}
+
+void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Node* blob_node, unsigned long int iter_limit) {
+
+    // add_r_libpaths_and_load(RINS);
+    // for (Tree *t : gene_trees) t->LCA_preprocessing();
+
+    std::unordered_map<index_t, int> parititons_votes; 
+    parititons_votes.reserve(blob_node->multi_partitions.size());
+        
+    for (index_t i = 0; i < blob_node->multi_partitions.size(); i ++) {
+        parititons_votes[i] = 0ULL;
+    }
+
+    for (size_t k = 0; k + 3 < blob_node->minimizers.size(); k += 4) {
+
+        std::unordered_map<index_t, size_t> seen_partitions_in_quad;
+        seen_partitions_in_quad.reserve(4);
+            
+        for (size_t t = 0; t < 4; ++t) {
+            index_t minimizer = blob_node->minimizers[k + t];
+            
+            auto it = blob_node->taxon2partition_id_mapping.find(minimizer);
+            index_t partition_id = it->second;
+
+            if (it != blob_node->taxon2partition_id_mapping.end()) {
+                seen_partitions_in_quad[partition_id] += 1;
+                // seen_partitions_in_quad.insert(partition_id);
+            } else {
+                seen_partitions_in_quad[partition_id] = 1;
+            }
+        }
+
+        for (const auto& [partition_id, votes] : seen_partitions_in_quad) {
+            if (votes == 1) {
+                parititons_votes[partition_id] += 1;
+            } else if (votes >= 2) {
+                // parititons_votes[partition_id] = -100;
+                parititons_votes[partition_id] += 1;
+            }
+            
+        }
+    }
+
+    if (blob_node->multi_partitions.size() < 5) {
+        std::cout << "Blob id " << blob_node->index << " has the degree of less than 5, unable to identify the hybridization" << std::endl;
+    } else {
+            
+            // sort the partition votes by values 
+
+        std::vector<std::pair<index_t, int>> sorted_partitions (parititons_votes.begin(), parititons_votes.end());
+        std::sort(sorted_partitions.begin(), sorted_partitions.end(), [](auto &a, auto &b) { return a.second > b.second; });
+            
+        if (sorted_partitions.size() > 5) {
+            sorted_partitions.resize(5); // keep top 5 partitions only
+        }
+
+            
+        std::cout << "number of parititons : " << blob_node->multi_partitions.size() << std::endl;
+        // print out the top 5 partitions
+        std::cout << "Blob id " << blob_node->index << " top 5 partitions votes: ";
+        for (auto &p : sorted_partitions) {
+            std::cout << "Partition " << p.first << " with votes " << p.second << "; ";
+        }
+        std::cout << std::endl;
+
+        std::cout << "sorted partitions size: " << sorted_partitions.size() << std::endl;
+
+
+            // iterates all the way of choose 4 from 5 paritions
+            
+        weight_t best_pvalue = -1.0;
+        index_t best_missing = -1;
+            
+        for (index_t missing = 0; missing < 5; ++missing) {
+            std::vector<std::vector<index_t>> quard_vec;
+                
+                
+            for (index_t j = 0; j < 5; j++) {
+                if (j != missing) {
+                        
+                    quard_vec.push_back(blob_node->multi_partitions[sorted_partitions[j].first]);
+                        
+                }
+            }
+
+            // std::cout << "quard_vec size: " << quard_vec.size() << std::endl;
+
+                
+            index_t current_minimizer[4];
+            // weight_t current_pvalue = search_quard(gene_trees, quard_vec, current_minimizer);
+            weight_t current_pvalue = search_quard_heuristic(gene_trees, quard_vec, iter_limit, current_minimizer);
+            // std::cout << "debugging line 210" << std::endl;
+            if (best_pvalue < current_pvalue) {
+                best_pvalue = current_pvalue;
+                best_missing = missing;
+            }
+
+                
+        }
+        // std::cout << "best missing : " << best_missing << std::endl;
+        // std::cout << "Blob id " << blob_node->index << " identified hybridization partition id: " << sorted_partitions[best_missing].first << " with best p-value: " << best_pvalue << std::endl;
+        blob_node->hybrid_index = sorted_partitions[best_missing].first;
+        std::cout << "Hybrid blob id " << blob_node->index << " identified hybridization partition : [";
+        for (index_t taxon : blob_node->multi_partitions[blob_node->hybrid_index]) {
+            std::cout << dict->index2label(taxon) << " ";
+        }
+        std::cout << "]" << std::endl;
+    }
+}
+
+
+void SpeciesTree::pivot_scan(std::vector<Tree *> &gene_trees, Dict *dict, Node *blob_node, unsigned long int iter_limit) {
+    
+        
+    if (blob_node->multi_partitions.size() < 5) {
+        std::cout << "Blob id " << blob_node->index << " has the degree of less than 5, unable to identify the hybridization" << std::endl;
+        
+    } else {
+        std::unordered_map<index_t, index_t> pivot_scores;
+            
+        index_t hybrid_partition_index = blob_node->hybrid_index;
+        std::vector<index_t> multi_partitions_index_no_pivot;
+            
+        for (index_t i = 0; i < blob_node->multi_partitions.size(); i++) {
+            pivot_scores[i] = 0;
+            if (i != hybrid_partition_index) {
+                multi_partitions_index_no_pivot.push_back(i);
+            }
+        }
+        // random shuffle 
+        std::random_shuffle(multi_partitions_index_no_pivot.begin(),
+                multi_partitions_index_no_pivot.end());
+
+        index_t partititon_i = multi_partitions_index_no_pivot[0];
+        index_t partittion_j = multi_partitions_index_no_pivot[1];
+        for (index_t k = 2; k < multi_partitions_index_no_pivot.size(); k ++) {
+                
+            index_t partition_k = multi_partitions_index_no_pivot[k];
+            std::vector<std::vector<index_t>> quad = {blob_node->multi_partitions[partititon_i], 
+                blob_node->multi_partitions[partittion_j],
+                blob_node->multi_partitions[partition_k],
+                blob_node->multi_partitions[hybrid_partition_index]
+            };
+                
+
+
+            index_t minimizer[4];
+
+            weight_t min_pvalue = search_quard_heuristic(gene_trees, quad, iter_limit, minimizer);
+
+
+            index_t hybrid_taxon_index_pos = -1;
+
+                
+            for (index_t i = 0; i < 4; i++) {
+                if (blob_node->taxon2partition_id_mapping[minimizer[i]] == hybrid_partition_index) {
+                    hybrid_taxon_index_pos = i;
+                    break;
+                }
+            }
+            index_t hybrid_taxon_index = minimizer[hybrid_taxon_index_pos];
+                
+                
+            std::array<std::array<index_t,4>,2> displayed_quartets = computed_displayed_quartet_toplogy(minimizer);
+                
+            std::array<index_t, 2> hybrid_siblings = siblings_in_two_best_topologies(displayed_quartets, hybrid_taxon_index);
+                
+            partititon_i = blob_node->taxon2partition_id_mapping[hybrid_siblings[0]];
+            pivot_scores[partititon_i] += 1;
+
+
+            partittion_j = blob_node->taxon2partition_id_mapping[hybrid_siblings[1]];
+            pivot_scores[partittion_j] += 1;
+
+        }
+
+        
+        blob_node->pivots[0] = partittion_j;
+        blob_node->pivots[1] = partititon_i;
+        std::cout << "blob id : " << blob_node->index << " has hybrid bucket: [ ";
+        for (index_t taxon : blob_node->multi_partitions[blob_node->hybrid_index]) {
+            std::cout << dict->index2label(taxon) << " ";
+        }
+        std::cout << "] and pivot bucket 0 : [ ";
+            
+        for (index_t taxon : blob_node->multi_partitions[blob_node->pivots[0]]) {
+            std::cout << dict->index2label(taxon) << " ";
+        }
+        std::cout << "] " << std::endl;
+
+        std::cout << "] and pivot bucket 1 : [ ";
+            
+        for (index_t taxon : blob_node->multi_partitions[blob_node->pivots[1]]) {
+            std::cout << dict->index2label(taxon) << " ";
+        }
+        std::cout << "] " << std::endl;
+
+
+        // Print all pivot scores for all buckets
+        // std::cout << "pivot scores by bucket id: ";
+        // for (index_t pid = 0; pid < (index_t)blob_node->multi_partitions.size(); ++pid) {
+            // std::cout << pid << "=" << pivot_scores[pid];
+            // if (pid + 1 < (index_t)blob_node->multi_partitions.size()) std::cout << ", ";
+        // }
+        std::cout << std::endl;
+        std::cout << "piviot candidate 1 = " << partittion_j << std::endl;
+        std::cout << "piviot candidate 2 = " << partititon_i << std::endl;
+
+    }
+
+}
+
+bool SpeciesTree::is_bucket_i_less_than_bucket_j(index_t partition_i, index_t partition_j, index_t pivot_index, Node* blob_node, std::vector<Tree *> gene_trees, unsigned long int iter_limit, size_t &failed_counts) {
+    index_t hybrid_index = blob_node->hybrid_index;
+
+    iter_limit = std::ceil(2 * iter_limit / std::log(dict->size()));
+
+    std::vector<std::vector<index_t>> quad = {blob_node->multi_partitions[partition_i], 
+                    blob_node->multi_partitions[partition_j],
+                    blob_node->multi_partitions[pivot_index],
+                    blob_node->multi_partitions[hybrid_index]
+                };
+                
+
+
+    index_t minimizer[4];
+
+    weight_t min_pvalue = search_quard_heuristic(gene_trees, quad, iter_limit, minimizer);
+    
+    index_t hybrid_taxon_index_pos = -1;
+    
+    for (index_t i = 0; i < 4; i++) {
+        if (blob_node->taxon2partition_id_mapping[minimizer[i]] == hybrid_index) {
+            hybrid_taxon_index_pos = i;
+            break;
+        }
+    }
+    
+    index_t hybrid_taxon_index = minimizer[hybrid_taxon_index_pos];
+
+    std::array<std::array<index_t,4>,2> displayed_quartets = computed_displayed_quartet_toplogy(minimizer);
+
+    std::array<index_t, 2> hybrid_siblings = siblings_in_two_best_topologies(displayed_quartets, hybrid_taxon_index);
+
+    bool seen_pivot_with_hybrid = false;
+    bool bucket_i_less_than_j = true;
+    for (index_t i = 0; i < 2; i++) {
+        if (blob_node->taxon2partition_id_mapping[hybrid_siblings[i]] == pivot_index) {
+            seen_pivot_with_hybrid = true;
+        }
+    }
+
+    if (!seen_pivot_with_hybrid) {
+        std::cout << "Warnning for blob id : " << blob_node->index << " pivot : " << pivot_index <<" bucket : " << partition_i << " and bucket " << partition_j << " We did not see hybrid|pivot siblings in all displayed quartet topology" << std::endl;
+        failed_counts += 1;
+    }
+
+    for (index_t i = 0; i < 2; i++) {
+        if (blob_node->taxon2partition_id_mapping[hybrid_siblings[i]] == pivot_index) {
+            continue;
+        } else if (blob_node->taxon2partition_id_mapping[hybrid_siblings[i]] == i) {
+            bucket_i_less_than_j = false;
+        }
+    }
+    return bucket_i_less_than_j;
+
+
+}
+
+
+void SpeciesTree::circle_sorting(std::vector<Tree *> &gene_trees, unsigned long int iter_limit, Node * blob_node) {
+
+    if (blob_node->multi_partitions.size() <= 4) {
+        std::cout << "blob id : " << blob_node->index << " has the degree of less than 5, unable to identify the hybridization " << std::endl;
+        
+        blob_node->circle_ordering.push_back(0);
+        blob_node->circle_ordering.push_back(1);
+        blob_node->circle_ordering.push_back(4);
+        blob_node->circle_ordering.push_back(3);
+            
+        return; 
+    };
+
+    const index_t hybrid_partition_index = blob_node->hybrid_index;
+
+    // Build base list of candidate partitions (excluding hybrid and pivot later)
+    std::vector<index_t> base_ids;
+    base_ids.reserve(blob_node->multi_partitions.size());
+    for (index_t pid = 0; pid < blob_node->multi_partitions.size(); ++pid) {
+        if (pid == hybrid_partition_index) continue;
+        base_ids.push_back(pid);
+    }
+
+        
+
+    // Track best attempt
+    size_t best_failed = std::numeric_limits<size_t>::max();
+    index_t best_pivot = -1;
+    std::vector<index_t> best_circle;
+
+    auto try_with_pivot = [&](index_t pivot_partition_index) -> void {
+
+        // ids excluding pivot & hybrid
+        std::vector<index_t> ids;
+        ids.reserve(blob_node->multi_partitions.size());
+        for (index_t pid : base_ids) {
+            if (pid == pivot_partition_index) continue;
+            ids.push_back(pid);
+        }
+
+        size_t failed_counts = 0;
+
+        std::sort(ids.begin(), ids.end(),
+                    [&](index_t a, index_t b) {
+                        return is_bucket_i_less_than_bucket_j(a, b, pivot_partition_index, blob_node, 
+                                                            gene_trees, iter_limit,
+                                                            failed_counts);
+                    });
+
+        std::vector<index_t> circle_ordering;
+        circle_ordering.reserve(blob_node->multi_partitions.size());
+        circle_ordering.push_back(hybrid_partition_index);
+        circle_ordering.push_back(pivot_partition_index);
+        circle_ordering.insert(circle_ordering.end(), ids.begin(), ids.end());
+
+        // Keep best (min failed). Tie-break: keep the first found.
+        if (failed_counts < best_failed) {
+            best_failed = failed_counts;
+            best_pivot = pivot_partition_index;
+            best_circle = std::move(circle_ordering);
+        }
+    };
+
+    // 1) Try the first pivot
+    try_with_pivot(blob_node->pivots[0]);
+
+    // 2) If not perfect, try other pivots and pick min failed
+    if (best_failed > 0) {
+        for (size_t pi = 1; pi < 2; ++pi) {
+            try_with_pivot(blob_node->pivots[pi]);
+            if (best_failed == 0) break; // early stop if perfect
+        }
+    }
+
+        // Apply best result
+    if (best_pivot >= 0) {
+        blob_node->circle_ordering = best_circle;
+
+        std::cout << "blob id " << blob_node->index
+                    << " chosen pivot=" << best_pivot
+                    << " failed_count=" << best_failed
+                    << " circle ordering:\n";
+
+        for (index_t pid : blob_node->circle_ordering) {
+            std::cout << "  bucket " << pid << ": [ ";
+            if (pid >= 0 && pid < (index_t)blob_node->multi_partitions.size()) {
+                for (index_t taxon : blob_node->multi_partitions[pid]) {
+                    std::cout << dict->index2label(taxon) << " ";
+                }
+            } else {
+                std::cout << "(invalid bucket id) ";
+            }
+            std::cout << "]\n";
+        }
+    } else {
+        std::cout << "Warning: blob id " << blob_node->index
+                    << " no valid pivot found for circle sorting.\n";
+    }
+}
+  
+
+// void SpeciesTree::circle_sorting(std::vector<Tree *> gene_trees, size_t iter_limit, std::vector<Node *> &hybrid_blob_nodes) {
+
+//     for (Node *blob_node : hybrid_blob_nodes) {
+//         if (blob_node->multi_partitions.size() > 4) {
+//             std::vector<index_t> multi_partitions_index_no_pivot_hybrid;
+//             index_t hybrid_partition_index = blob_node->hybrid_index;
+//             index_t pivot_partition_index = blob_node->pivots[0];
+//             std::vector<index_t> multi_partitions_index_no_pivot;
+//             std::vector<index_t> circle_ordering;
+//             circle_ordering.push_back(hybrid_partition_index);
+//             circle_ordering.push_back(pivot_partition_index);
+//             for (index_t i = 0; i < blob_node->multi_partitions.size(); i++) {
+                
+//                 if (i != hybrid_partition_index && i != pivot_partition_index) {
+//                     multi_partitions_index_no_pivot.push_back(i);
+//                 }
+//             }
+
+//             size_t failed_counts = 0;
+//             std::sort(multi_partitions_index_no_pivot.begin(), multi_partitions_index_no_pivot.end(), 
+//                 [&](index_t a, index_t b) {
+//                 return is_bucket_i_less_than_bucket_j(a, b, blob_node, gene_trees, iter_limit, failed_counts);
+//             });
+
+//             circle_ordering.insert(circle_ordering.end(), multi_partitions_index_no_pivot.begin(), multi_partitions_index_no_pivot.end());
+
+//             blob_node->circle_ordering = circle_ordering;
+
+//             if (failed_counts > 0) {
+//                 size_t failed_counts_another = 0;
+
+//             }
+            
+//             std::cout << "blob id " << blob_node->index << " circle ordering:\n";
+//             for (index_t pid : blob_node->circle_ordering) {
+//                 std::cout << "  bucket " << pid << ": [ ";
+//                 if (pid >= 0 && pid < (index_t)blob_node->multi_partitions.size()) {
+//                     for (index_t taxon : blob_node->multi_partitions[pid]) {
+//                         std::cout << dict->index2label(taxon) << " ";
+//                     }
+//                 } else {
+//                     std::cout << "(invalid bucket id) ";
+//                 }
+//                 std::cout << "]\n";
+//             }
+//         }
+        
+//     }
+
+// }
+
+// given tob-annotatiation tree and compute the m-partion maps and its inverse for all  nontrival blobs and the hybrization parititons
+SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, std::vector<Tree *> &gene_trees, unsigned long int iter_limit_blob) {
+        
+        std::cout << "Contracting branches with alpha = " << alpha << " and beta = " << beta << std::endl;
+        
+        this->dict = dict;
+        
+        std::vector<Node *> internal;
+        
+        std::vector<std::pair<std::vector<Node *>, std::vector<Node *>>> bips;
+        
+        input->get_bipartitions(&internal, &bips);
+        
+        std::cout << bips.size() << " branches to test" << std::endl;
+        
+        std::unordered_set<Node *> false_positive_beta;
+        
+        std::unordered_set<Node *> false_positive_alpha;
+
+        for (index_t i = 0; i < internal.size(); i ++) {
+                
+            if (internal[i]->min_pvalue < alpha) {
+                false_positive_alpha.insert(internal[i]);
+            } else if (internal[i]->max_pvalue > beta) {
+                false_positive_beta.insert(internal[i]);
+            }
+                
+        }
+    
+        auto [new_root, root_min] = hybrid_info_tree(input->root, dict, false_positive_alpha, false_positive_beta);
+        
+        root = new_root;
+        root->minimizers = root_min;
+        index2node[root->index] = root;
+        std::unordered_set<Node *> full_leaf_nodes;
+        get_leaf_set(root, &full_leaf_nodes);
+        std::unordered_set<Node *> full_leaf_indices;
+        for (Node *leaf : full_leaf_nodes) {
+            full_leaf_indices.insert(leaf);
+        }
+
+        std::vector<Node *> hybrid_blob_nodes;
+
+        compute_taxon2parition_mapping(new_root, dict, hybrid_blob_nodes, full_leaf_indices);
+
+        std::cout << "Printing output number of nontrival blobs:" << hybrid_blob_nodes.size() << std::endl;
+        
+        add_r_libpaths_and_load(RINS);
+        for (Tree *t : gene_trees) t->LCA_preprocessing();
+
+        for (Node * blob_node : hybrid_blob_nodes) {
+            hybrid_voting(gene_trees, dict, blob_node, iter_limit_blob);
+            pivot_scan(gene_trees, dict, blob_node, iter_limit_blob);
+            circle_sorting(gene_trees, iter_limit_blob, blob_node);
+
+        }
+        
+        
+    }
+
+
+// load p-value and just testing it get tob
 SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta) {
     std::cout << "Contracting branches with alpha = " << alpha << " and beta = " << beta << std::endl;
 
@@ -105,6 +694,11 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict,
         internal[i]->min_f[1] = min_f[1];
         internal[i]->min_f[2] = min_f[2];
 
+        internal[i]->minimizer[0] = minimizer[0];
+        internal[i]->minimizer[1] = minimizer[1];
+        internal[i]->minimizer[2] = minimizer[2];
+        internal[i]->minimizer[3] = minimizer[3];
+
         // Apply quartet star test
         weight_t max = -1.0;
         if ((min_f[0] + min_f[1] + min_f[2]) > 0)
@@ -182,6 +776,12 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict,
         internal[i]->min_f[0] = min_f[0];
         internal[i]->min_f[1] = min_f[1];
         internal[i]->min_f[2] = min_f[2];
+        
+        internal[i]->minimizer[0] = minimizer[0];
+        internal[i]->minimizer[1] = minimizer[1];
+        internal[i]->minimizer[2] = minimizer[2];
+        internal[i]->minimizer[3] = minimizer[3];
+    
 
         // Appy quartet star test
         weight_t max = -1.0;
@@ -231,6 +831,7 @@ std::string SpeciesTree::display_tree_pvalue(Node *root) {
     s[s.size() - 1] = ')';
     if (root->parent != NULL && (root->parent->parent != NULL || (root->parent->parent == NULL && root == root->parent->children[0]))) {
         std::ostringstream ss;
+        // serialize the minimizer and qCFs
         ss << std::scientific << std::setprecision(12) 
                               << "'[" 
                               << "blob_id=" << std::to_string(root->blob_id)
@@ -239,6 +840,7 @@ std::string SpeciesTree::display_tree_pvalue(Node *root) {
                               << ";qcf_1=" << std::to_string((int) root->min_f[0])
                               << ";qcf_2=" << std::to_string((int) root->min_f[1])
                               << ";qcf_3=" << std::to_string((int) root->min_f[2])
+                              << ";minimizer=" << dict->index2label(root->minimizer[0]) << "/" << dict->index2label(root->minimizer[1]) << "/" << dict->index2label(root->minimizer[2]) << "/" << dict->index2label(root->minimizer[3])
                               << "]'";
         return s + ss.str();
     }
@@ -470,6 +1072,127 @@ weight_t SpeciesTree::search_quard(std::vector<Tree *> &input, std::tuple<std::v
     return min;
 }
 
+
+weight_t SpeciesTree::search_quard(std::vector<Tree *> &input, std::vector<std::vector<index_t>> &quad, index_t* minimizer) {
+    index_t i[4] = {0, 0, 0, 0};
+    weight_t min = -1;
+
+    for (i[0] = 0; i[0] < quad[0].size(); i[0] ++) {
+        for (i[1] = 0; i[1] < quad[1].size(); i[1] ++) {
+            for (i[2] = 0; i[2] < quad[2].size(); i[2] ++) {
+                for (i[3] = 0; i[3] < quad[3].size(); i[3] ++) {
+                    index_t temp[4];
+                    temp[0] = quad[0][i[0]];
+                    temp[1] = quad[1][i[1]];
+                    temp[2] = quad[2][i[2]];
+                    temp[3] = quad[3][i[3]];
+                    // std::cout << "debugging line 755 " << std::endl;
+                    weight_t score = get_pvalue(input, temp);
+                    // std::cout << "done with get_pvalue " << std::endl;
+                    if (min < 0 || score < min) {
+                        min = score;
+                        minimizer[0] = temp[0]; minimizer[1] = temp[1]; minimizer[2] = temp[2]; minimizer[3] = temp[3];
+                    }
+                }
+            }
+        }
+    }
+
+    return min;
+}
+
+// search quard with number of iterations 
+
+
+weight_t SpeciesTree::search_quard_heuristic(std::vector<Tree *> &input,
+                                            std::vector<std::vector<index_t>> &quad,
+                                            unsigned long int iter_limit,
+                                            index_t *minimizer) {
+    index_t indices[4];
+    weight_t min = -1;
+    size_t count = 0;
+
+    // basic guard
+    if (quad.size() != 4) return (weight_t)-1;
+    for (int d = 0; d < 4; ++d) if (quad[d].empty()) return (weight_t)-1;
+
+    while (count < iter_limit) {
+        // random start: one from each bucket
+        indices[0] = quad[0][rand() % quad[0].size()];
+        indices[1] = quad[1][rand() % quad[1].size()];
+        indices[2] = quad[2][rand() % quad[2].size()];
+        indices[3] = quad[3][rand() % quad[3].size()];
+
+        weight_t old_min = min;
+
+        count += neighbor_search_quard(input, quad, indices, &min);
+
+        if (old_min < 0 || min < old_min) {
+            minimizer[0] = indices[0];
+            minimizer[1] = indices[1];
+            minimizer[2] = indices[2];
+            minimizer[3] = indices[3];
+        }
+    }
+
+    return min;
+}
+
+
+
+size_t SpeciesTree::neighbor_search_quard(std::vector<Tree *> &input,
+                                         std::vector<std::vector<index_t>> &quad,
+                                         index_t *current,
+                                         weight_t *min) {
+    auto [current_score, _] = get_pvalue_and_qCFs(input, current);
+    size_t k = 1;
+    
+    while (true) {
+        index_t best_next[4] = { current[0], current[1], current[2], current[3] };
+        weight_t best_next_score = current_score;
+
+        // Try changing one coordinate at a time (within its bucket)
+        for (int d = 0; d < 4; ++d) {
+            index_t temp[4] = { current[0], current[1], current[2], current[3] };
+
+            for (size_t i = 0; i < quad[d].size(); ++i) {
+                index_t new_index = quad[d][i];
+                if (new_index == current[d]) continue;
+
+                temp[d] = new_index;
+                auto [temp_score, _] = get_pvalue_and_qCFs(input, temp);
+                ++k;
+
+                if (temp_score >= 0 && temp_score < best_next_score) {
+                    best_next_score = temp_score;
+                    best_next[0] = temp[0];
+                    best_next[1] = temp[1];
+                    best_next[2] = temp[2];
+                    best_next[3] = temp[3];
+                }
+
+                temp[d] = current[d]; 
+            }
+        }
+
+        // no improving neighbor
+        if (best_next_score >= current_score) break;
+
+        // take best move
+        current_score = best_next_score;
+        current[0] = best_next[0];
+        current[1] = best_next[1];
+        current[2] = best_next[2];
+        current[3] = best_next[3];
+    }
+
+    if (*min < 0 || current_score < *min) *min = current_score;
+    return k;
+}
+
+
+
+
 weight_t SpeciesTree::search_3f1a(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer) {
     index_t i[4] = {0, 0, 0, 0};
     weight_t min = -1;
@@ -564,6 +1287,7 @@ weight_t SpeciesTree::search_star(std::vector<Tree *> &input,
     return min;
 }
 
+//// fixed the bug in minimizer updates in the heuristic search
 weight_t SpeciesTree::search(std::vector<Tree *> &input, 
                              std::vector<Node *> &A,
                              std::vector<Node *> &B,
@@ -572,15 +1296,24 @@ weight_t SpeciesTree::search(std::vector<Tree *> &input,
     index_t indices[4];
     weight_t min = -1;
     size_t count = 0;
+
     while (count < iter_limit) {
         indices[0] = A[rand() % A.size()]->index;
         do {indices[1] = A[rand() % A.size()]->index;} while (indices[0] == indices[1]);
         indices[2] = B[rand() % B.size()]->index;
         do {indices[3] = B[rand() % B.size()]->index;} while (indices[2] == indices[3]);
+        
+        weight_t old_min = min;
+
         count += neighbor_search(input, A, B, indices, &min);
-        minimizer[0] = indices[0]; minimizer[1] = indices[1]; minimizer[2] = indices[2]; minimizer[3] = indices[3];
+
+        if (min < old_min || old_min < 0) {
+            minimizer[0] = indices[0]; minimizer[1] = indices[1]; minimizer[2] = indices[2]; minimizer[3] = indices[3];
+        }
+
         // std::cout << i << ' ' << min << std::endl;
     }
+    
     //std::cout << "heuristic iter: " << count << std::endl;
     return min;
 }
@@ -731,6 +1464,83 @@ weight_t SpeciesTree::neighbor_search_star(std::vector<Tree *> &input, std::vect
     return k;
 }
 
+// the get_quartet will return the index = the index of sibling of the 0 index in indices - 1 in the indices array, 
+// here we alway gonna passing the hybrid to the index of 0 in the indices array, 
+// thus we can easily identify the sibilibing of hybrid in the displayed toplogy 
+std::pair<weight_t, std::array<weight_t, 3>> SpeciesTree::get_pvalue_and_qCFs(std::vector<Tree *> &input, index_t *indices) {
+    
+    index_t temp[4];
+    for (index_t i = 0; i < 4; i ++) 
+        temp[i] = indices[i];
+    std::sort(temp, temp + 4);
+    quartet_t q = join(temp);
+
+    if (pvalues.find(q) == pvalues.end() || qCFs_cache.find(q) == qCFs_cache.end()) {
+        weight_t qCF[3] = {0, 0, 0};
+        for (Tree *t : input) {
+            index_t topology = t->get_quartet(temp);
+            if (topology >= 0) qCF[topology] += 1;
+        }
+
+        if ((qCF[0] + qCF[1] + qCF[2]) == 0)
+            pvalues[q] = 1.0;
+        else
+            pvalues[q] = pvalue(qCF);
+        qCFs_cache[q] = {qCF[0], qCF[1], qCF[2]}; // main the global qCFs map
+    }
+
+    return {pvalues[q], qCFs_cache[q]};
+}
+
+std::array<std::array<index_t, 4>, 2> SpeciesTree::computed_displayed_quartet_toplogy(index_t *indices) {
+    index_t temp[4];
+    for (index_t i = 0; i < 4; i ++) temp[i] = indices[i];
+    std::sort(temp, temp + 4);
+    quartet_t q = join(temp);
+
+    index_t best1 = 0, best2 = 1;
+    for (index_t t = 0; t < 3; ++t) {
+        if (qCFs_cache[t] > qCFs_cache[best1] || (qCFs_cache[t] == qCFs_cache[best1] && t < best1)) best1 = t;
+    }
+    best2 = (best1 == 0 ? 1 : 0);
+
+    for (index_t t = 0; t < 3; ++t) {
+        if (t == best1) continue;
+        if (qCFs_cache[t] > qCFs_cache[best2] || (qCFs_cache[t] == qCFs_cache[best2] && t < best2)) best2 = t;
+    }
+
+    auto topo_to_quartet = [&](int topo) -> std::array<index_t, 4> {
+        // Returns {a,b,c,d} meaning (a,b) and (c,d) are the two sibling pairs.
+        switch (topo) {
+            case 0: return { temp[0], temp[1], temp[2], temp[3] }; // 01|23
+            case 1: return { temp[0], temp[2], temp[1], temp[3] }; // 02|13
+            case 2: return { temp[0], temp[3], temp[1], temp[2] }; // 03|12
+            default: return { temp[0], temp[1], temp[2], temp[3] };
+        }
+    };
+
+    return {topo_to_quartet(best1), topo_to_quartet(best2)};
+}
+
+static inline index_t sibling_in_topology(const std::array<index_t,4> &topo, index_t taxon) {
+    // pair1: topo[0] <-> topo[1], pair2: topo[2] <-> topo[3]
+    if (topo[0] == taxon) return topo[1];
+    if (topo[1] == taxon) return topo[0];
+    if (topo[2] == taxon) return topo[3];
+    if (topo[3] == taxon) return topo[2];
+    return (index_t)-1;
+}
+
+std::array<index_t, 2> SpeciesTree::siblings_in_two_best_topologies(const std::array<std::array<index_t,4>,2> &best2,
+                                             index_t taxon) {
+    std::array<index_t,2> sibs;
+    sibs[0] = sibling_in_topology(best2[0], taxon);
+    sibs[1] = sibling_in_topology(best2[1], taxon);
+    return sibs;
+}
+
+
+
 weight_t SpeciesTree::get_pvalue(std::vector<Tree *> &input, index_t *indices) {
     index_t temp[4];
     for (index_t i = 0; i < 4; i ++) 
@@ -761,8 +1571,8 @@ weight_t SpeciesTree::get_pvalue(std::vector<Tree *> &input, index_t *indices) {
             pvalues[q] = 1.0;
         else
             pvalues[q] = pvalue(qCF);
+        qCFs_cache[q] = {qCF[0], qCF[1], qCF[2]}; // main the global qCFs map
     }
-
     return pvalues[q];
 }
 
