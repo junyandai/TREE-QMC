@@ -127,16 +127,29 @@ std::vector<index_t> SpeciesTree::compute_taxon2parition_mapping(Node *root, Dic
     return taxon_below;
 }
 
-void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Node* blob_node, unsigned long int iter_limit) {
+void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Node* blob_node, unsigned long int iter_limit, std::vector<std::unordered_set<index_t>> &banned_buckets) {
 
     // add_r_libpaths_and_load(RINS);
     // for (Tree *t : gene_trees) t->LCA_preprocessing();
 
     std::unordered_map<index_t, int> parititons_votes; 
     parititons_votes.reserve(blob_node->multi_partitions.size());
-        
+    std::unordered_set<index_t> banned_buckets_index_of_current_node;
+
+    for (size_t i = 0; i < banned_buckets.size(); i++) {
+        for (size_t j = 0; j < blob_node->multi_partitions.size(); j++) {
+            if (std::all_of( blob_node->multi_partitions[j].begin(),  blob_node->multi_partitions[j].end(),
+            [&](index_t a) {
+                return banned_buckets[i].count(a) > 0;
+            })) {
+                banned_buckets_index_of_current_node.insert(j);
+            }
+        }
+    }
+    
     for (index_t i = 0; i < blob_node->multi_partitions.size(); i ++) {
         parititons_votes[i] = 0ULL;
+        
     }
 
     for (size_t k = 0; k + 3 < blob_node->minimizers.size(); k += 4) {
@@ -159,7 +172,9 @@ void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Nod
         }
 
         for (const auto& [partition_id, votes] : seen_partitions_in_quad) {
-            if (votes == 1) {
+            if (banned_buckets_index_of_current_node.find(partition_id) != banned_buckets_index_of_current_node.end()) {
+                parititons_votes[partition_id] -= 1;
+            } else if (votes == 1) {
                 parititons_votes[partition_id] += 1;
             } else if (votes >= 2) {
                 // parititons_votes[partition_id] = -100;
@@ -177,10 +192,18 @@ void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Nod
 
         std::vector<std::pair<index_t, int>> sorted_partitions (parititons_votes.begin(), parititons_votes.end());
         std::sort(sorted_partitions.begin(), sorted_partitions.end(), [](auto &a, auto &b) { return a.second > b.second; });
-            
+        
+        // sorted_partitions.erase(std::remove_if(sorted_partitions.begin(), sorted_partitions.end(), [](std::pair<index_t, int> a) return a.second < 0), sorted_partitions.end());
+
         if (sorted_partitions.size() > 5) {
             sorted_partitions.resize(5); // keep top 5 partitions only
         }
+
+        if (sorted_partitions[0].second < 0) {
+            std::cout << "Blob id " << blob_node->index << " all partitions conflicted leave it as unresolved. ";
+            return;
+        }
+
 
             
         std::cout << "number of parititons : " << blob_node->multi_partitions.size() << std::endl;
@@ -228,6 +251,7 @@ void SpeciesTree::hybrid_voting(std::vector<Tree *> &gene_trees, Dict *dict, Nod
         // std::cout << "best missing : " << best_missing << std::endl;
         // std::cout << "Blob id " << blob_node->index << " identified hybridization partition id: " << sorted_partitions[best_missing].first << " with best p-value: " << best_pvalue << std::endl;
         blob_node->hybrid_index = sorted_partitions[best_missing].first;
+        banned_buckets.push_back(std::unordered_set<index_t>(blob_node->multi_partitions[blob_node->hybrid_index].begin(), blob_node->multi_partitions[blob_node->hybrid_index].end()));
         std::cout << "Hybrid blob id " << blob_node->index << " identified hybridization partition : [";
         for (index_t taxon : blob_node->multi_partitions[blob_node->hybrid_index]) {
             std::cout << dict->index2label(taxon) << " ";
@@ -591,6 +615,11 @@ SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta,
 
         std::vector<Node *> hybrid_blob_nodes;
 
+        std::sort(hybrid_blob_nodes.begin(), hybrid_blob_nodes.end(), [](const Node * a, Node * b){
+            return a->multi_partitions.size() > b->multi_partitions.size();
+        });
+        std::vector<std::unordered_set<index_t>> banned_buckets;
+
         compute_taxon2parition_mapping(new_root, dict, hybrid_blob_nodes, full_leaf_indices);
 
         std::cout << "Printing output number of nontrival blobs:" << hybrid_blob_nodes.size() << std::endl;
@@ -599,7 +628,7 @@ SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta,
         for (Tree *t : gene_trees) t->LCA_preprocessing();
 
         for (Node * blob_node : hybrid_blob_nodes) {
-            hybrid_voting(gene_trees, dict, blob_node, iter_limit_blob);
+            hybrid_voting(gene_trees, dict, blob_node, iter_limit_blob, banned_buckets);
             pivot_scan(gene_trees, dict, blob_node, iter_limit_blob);
             circle_sorting(gene_trees, iter_limit_blob, blob_node);
 

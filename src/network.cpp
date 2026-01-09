@@ -32,7 +32,15 @@ Network::Network(Network &network) {
 
 Network::Network(Tree *tree, Dict *dict) {
 
+    std::unordered_set<Node *> candidates_node;
     std::unordered_set<index_t> candidates;
+    tree->get_leaf_set(tree->get_root(), &candidates_node);
+    
+    for (const Node* n : candidates_node) {
+        candidates.insert(n->index);
+    }
+
+
     index_t candidate_index = -1;
     Node *hybrid_tree_root = tree->get_root();
     if (check_root(tree->get_root(), candidates)) {

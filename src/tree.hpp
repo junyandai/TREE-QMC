@@ -185,7 +185,7 @@ class SpeciesTree : public Tree {
         SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, unsigned long int iter_limit_blob);
         SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, unsigned long int iter_limit_blob, bool three_fix_one_alter, bool is_quard);
         SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, std::vector<Tree *> &gene_trees, unsigned long int iter_limit_blob);
-        void hybrid_voting(std::vector<Tree *> &gene_trees,Dict *dict, Node * hybrid_blob, unsigned long int iter_limit);
+        void hybrid_voting(std::vector<Tree *> &gene_trees,Dict *dict, Node * hybrid_blob, unsigned long int iter_limit, std::vector<std::unordered_set<index_t>> &banned_buckets);
         void pivot_scan(std::vector<Tree *> &gene_trees, Dict *dict, Node *hybrid_blob, unsigned long int iter_limit);
         void circle_sorting(std::vector<Tree *> &gene_trees, unsigned long int iter_limit, Node* hybrid_blob_node);
         #endif  // ENABLE_TOB
