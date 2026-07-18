@@ -143,6 +143,19 @@ weight_t pvalue(weight_t *qCF) {
     return *pvalue;
 }
 
+weight_t pvalue_T1(weight_t *qCF) {
+    SEXP result = RINS.parseEval(
+        "quartetTreeTest(c(" +
+        std::to_string(qCF[0]) + "," +
+        std::to_string(qCF[1]) + "," +
+        std::to_string(qCF[2]) +
+        "), \"T1\")"
+    );
+
+    SEXP pvalue_sexp = VECTOR_ELT(result, 0);
+    return static_cast<weight_t>(REAL(pvalue_sexp)[0]);
+}
+
 weight_t pvalue_star(weight_t *qCF) {
     SEXP a = RINS.parseEval("quartetStarTest(c(" + std::to_string(qCF[0]) + "," + std::to_string(qCF[1]) + "," + std::to_string(qCF[2]) + "))");
     double* pvalue = REAL(a);

@@ -1,3 +1,28 @@
+/*
+MIT License
+
+Copyright (c) 2017-2026 Vincent La
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+
 #ifndef CSVPARSER_HPP
 #define CSVPARSER_HPP
 #pragma once
@@ -7,6 +32,7 @@
 #include <variant>
 #include <algorithm>
 #include <iomanip>
+#include <stdexcept>
 using std::cout;
 using Cell = std::variant<int, float, std::string>;
 using Row = std::vector<Cell>;
@@ -584,5 +610,110 @@ public:
         }
     }
 };
+
+
+class CSVWriter
+{
+private:
+    std::ofstream file;
+    char delimiter;
+
+    static std::string escape_string(
+        const std::string &value,
+        char delimiter
+    )
+    {
+        const bool needs_quotes =
+            value.find(delimiter) != std::string::npos ||
+            value.find('"') != std::string::npos ||
+            value.find('\n') != std::string::npos ||
+            value.find('\r') != std::string::npos;
+
+        if (!needs_quotes)
+        {
+            return value;
+        }
+
+        std::string escaped;
+        escaped.reserve(value.size() + 2);
+        escaped.push_back('"');
+
+        for (char c : value)
+        {
+            if (c == '"')
+            {
+                escaped.push_back('"');
+                escaped.push_back('"');
+            }
+            else
+            {
+                escaped.push_back(c);
+            }
+        }
+
+        escaped.push_back('"');
+        return escaped;
+    }
+
+    void write_cell(const std::string &value)
+    {
+        file << escape_string(value, delimiter);
+    }
+
+    void write_cell(const char *value)
+    {
+        write_cell(std::string(value));
+    }
+
+    template <typename T>
+    void write_cell(const T &value)
+    {
+        file << value;
+    }
+
+    template <typename First, typename... Rest>
+    void write_values(const First &first, const Rest &...rest)
+    {
+        write_cell(first);
+
+        ((file << delimiter, write_cell(rest)), ...);
+
+        file << '\n';
+    }
+
+public:
+    explicit CSVWriter(
+        const std::string &filename,
+        char delimiter = ','
+    )
+        : file(filename), delimiter(delimiter)
+    {
+        if (!file.is_open())
+        {
+            throw std::runtime_error(
+                "Unable to open CSV file: " + filename
+            );
+        }
+
+        file << std::setprecision(17);
+    }
+
+    template <typename... Values>
+    void write_row(const Values &...values)
+    {
+        write_values(values...);
+    }
+
+    void flush()
+    {
+        file.flush();
+    }
+
+    bool good() const
+    {
+        return file.good();
+    }
+};
+
 
 #endif

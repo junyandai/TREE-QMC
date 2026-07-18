@@ -13,6 +13,7 @@ Instance::Instance(int argc, char **argv) {
     table_file = "";
     root_str = "";
     annotation_tree_file = "";
+    output_qcfs_table_file = "";
     //pvalue_file = "";
 
     normal_mode = "2";   // use best algorithm for normalizing based on artificial taxa
@@ -36,7 +37,7 @@ Instance::Instance(int argc, char **argv) {
     two_fix_two_alter = false;
     quard = false;
     network = false;
-
+    write_qcfs = false;
     override_file = false;
 
     support_low = 0.0;
@@ -219,7 +220,7 @@ long long Instance::solve() {
                     std::cout << "Setting blob iteration limit to 2*ntaxa^2 = " << iter_limit_blob << std::endl;
                 }
             }
-            SpeciesTree* display = new SpeciesTree(input, dict, output, iter_limit_blob, three_fix_one_alter, two_fix_two_alter, quard);
+            SpeciesTree* display = new SpeciesTree(input, dict, output, iter_limit_blob, three_fix_one_alter, two_fix_two_alter, quard, output_qcfs_table_file);
             delete display;
             std::cout << "Printing output tree with pvalues:" << std::endl;
             std::cout << output->to_string_pvalue() << std::endl;
@@ -228,6 +229,7 @@ long long Instance::solve() {
             exit(1);
         #endif  // ENABLE_TOB
     }
+
 
     #if ENABLE_TOB
     if (!load_pvalue && !store_pvalue && blob) {
@@ -446,6 +448,16 @@ int Instance::parse(int argc, char **argv) {
                 return 2;
             }
         }*/
+        else if (opt == "--write_qcfs") {
+            write_qcfs = true;
+            if (i < argc - 1) {
+                output_qcfs_table_file = argv[++ i];
+            }
+            else {
+                std::cout << "\nERROR: No output QCFS table file specified" << std::endl;
+                return 2;
+            }
+        }
         else if (opt == "--store_pvalue") {
             store_pvalue = true;
         }
@@ -528,7 +540,7 @@ int Instance::parse(int argc, char **argv) {
                 return 2;
             }
         }
-
+        
         // Handle weighting options
         else if (opt == "--hybrid") {
             weight_mode = 'h';

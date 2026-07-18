@@ -930,3 +930,139 @@ void Tree::reroot_on_edge_above_node(Node *node) {
         stack.pop();
     }
 }
+
+
+
+// for lca computing of gene trees
+
+void Tree::LCA_euler_dfs(Node* node, index_t depth) {
+    node->depth = depth;
+
+    // Record the first occurrence of this node.
+    if (lca_first_occurrence.find(node) ==
+        lca_first_occurrence.end()) {
+        lca_first_occurrence[node] = lca_euler.size();
+    }
+
+    lca_euler.push_back(node);
+    lca_euler_depth.push_back(depth);
+
+    for (Node* child : node->children) {
+        LCA_euler_dfs(child, depth + 1);
+
+        // After returning from a child, record the current node again.
+        lca_euler.push_back(node);
+        lca_euler_depth.push_back(depth);
+    }
+}
+
+void Tree::LCA_preprocessing_with_ett_rmq_sparse_table() {
+    lca_euler.clear();
+    lca_euler_depth.clear();
+    lca_first_occurrence.clear();
+    lca_log2.clear();
+    lca_sparse_table.clear();
+
+    if (root == nullptr) {
+        return;
+    }
+
+    LCA_euler_dfs(root, 0);
+
+    const std::size_t m = lca_euler.size();
+
+    if (m == 0) {
+        return;
+    }
+
+    lca_log2.resize(m + 1, 0);
+
+    for (std::size_t i = 2; i <= m; ++i) {
+        lca_log2[i] = lca_log2[i / 2] + 1;
+    }
+
+    const std::size_t number_of_levels = lca_log2[m] + 1;
+
+    lca_sparse_table.assign(
+        number_of_levels,
+        std::vector<std::size_t>(m)
+    );
+
+    for (std::size_t i = 0; i < m; ++i) {
+        lca_sparse_table[0][i] = i;
+    }
+
+    for (std::size_t k = 1; k < number_of_levels; ++k) {
+        const std::size_t interval_length =
+            std::size_t{1} << k;
+
+        const std::size_t half_length =
+            interval_length >> 1;
+
+        for (std::size_t i = 0;
+             i + interval_length <= m;
+             ++i) {
+            const std::size_t left_position =
+                lca_sparse_table[k - 1][i];
+
+            const std::size_t right_position =
+                lca_sparse_table[k - 1][i + half_length];
+
+            if (lca_euler_depth[left_position] <=
+                lca_euler_depth[right_position]) {
+                lca_sparse_table[k][i] = left_position;
+            } else {
+                lca_sparse_table[k][i] = right_position;
+            }
+        }
+    }
+}
+
+
+Node* Tree::LCA_via_rmq(Node* x, Node* y) const {
+    if (x == nullptr || y == nullptr) {
+        return nullptr;
+    }
+
+    const auto x_it = lca_first_occurrence.find(x);
+    const auto y_it = lca_first_occurrence.find(y);
+
+    // These nodes do not belong to the preprocessed tree.
+    if (x_it == lca_first_occurrence.end() ||
+        y_it == lca_first_occurrence.end()) {
+        return nullptr;
+    }
+
+    std::size_t left = x_it->second;
+    std::size_t right = y_it->second;
+
+    if (left > right) {
+        std::swap(left, right);
+    }
+
+    const std::size_t interval_length = right - left + 1;
+    const std::size_t k = lca_log2[interval_length];
+    const std::size_t block_length = std::size_t{1} << k;
+
+    /*
+     * Cover [left, right] with two overlapping intervals of length 2^k:
+     *
+     * [left, left + 2^k - 1]
+     * [right - 2^k + 1, right]
+     */
+    const std::size_t first_position =
+        lca_sparse_table[k][left];
+
+    const std::size_t second_start =
+        right - block_length + 1;
+
+    const std::size_t second_position =
+        lca_sparse_table[k][second_start];
+
+    if (lca_euler_depth[first_position] <=
+        lca_euler_depth[second_position]) {
+        return lca_euler[first_position];
+    }
+
+    return lca_euler[second_position];
+}
