@@ -30,7 +30,17 @@ SpeciesTree::SpeciesTree(std::string stree_file, Dict *dict) {
 
     if (dict->size() > tracker) {
         std::cout << "\nERROR: Species tree has more taxa than input!" << std::endl;
+        std::cout << "    Species tree has " << dict->size() << " taxa" << std::endl;
+        std::cout << "    Input has " << tracker << " taxa" << std::endl;
+
+        for (std::size_t i = 0; i < tracker; i++) {
+            std::cout << "    Taxon " << dict->index2label(i) << " is in input and in " << std::endl;
+        }
+        for (std::size_t i = tracker; i < dict->size(); i++) {
+            std::cout << "    Taxon " << dict->index2label(i) << " is in species tree but not in input" << std::endl;
+        }
         exit(1);
+        // std::cout << "WARNING: Species tree has more taxa than input!" << std::endl;
     }
 
     if (this->size() < 3) {

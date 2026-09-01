@@ -1,9 +1,20 @@
 #if ENABLE_TOB
 #include "tree.hpp"
+#include "cvse.hpp"
 #include "rlib_dirs.hpp"
 #include <random>
 #include <algorithm>
 #include <memory>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 void get_qCFs(std::vector<Tree *> &input, index_t *indices, weight_t *qCFs) {
     index_t temp[4];
@@ -1789,7 +1800,8 @@ SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta,
 
 
         add_r_libpaths_and_load(RINS);
-        for (Tree *t : gene_trees) t->LCA_preprocessing();
+        // for (Tree *t : gene_trees) t->LCA_preprocessing();
+        for (Tree *t : gene_trees) t->LCA_preprocessing_with_ett_rmq_sparse_table();
 
         std::vector<Node *> hybrid_blob_nodes;
 
@@ -1834,6 +1846,8 @@ SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta,
     }
 
 
+///////////above is for net-cs //////////////////////////////////
+
 // load p-value and just testing it get tob
 SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, bool enable_split_test) {
     std::cout << "Contracting branches with alpha = " << alpha << " and beta = " << beta << std::endl;
@@ -1861,7 +1875,43 @@ SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta,
     
     root = build_refinement(input->root, false_positive);
 }
-///////////above is for net-cs //////////////////////////////////
+
+// load p-value annotated tree and perform deep search on specific branches or centerin branches with low p-value based on threshold, and return the update p-valu annotated tree and write qcfs csv out
+SpeciesTree::SpeciesTree(Tree *input, Dict *dict, weight_t alpha, std::vector<Tree *> &gene_trees, std::string output_qcfs_table_file) {
+
+    std::unique_ptr<QCFWriter> qcf_writer = nullptr; 
+    if (!output_qcfs_table_file.empty()) {
+        qcf_writer = std::make_unique<QCFWriter>(
+            output_qcfs_table_file,
+            dict
+        );
+    }
+    add_r_libpaths_and_load(RINS);
+
+    for (Tree *t : gene_trees) t->LCA_preprocessing_with_ett_rmq_sparse_table();
+    
+    this->root = input->root;
+    this->index2node = std::move(input->index2node);
+    this->dict = dict;
+    input->root = nullptr;
+    input->index2node.clear();
+    std::vector<Node *> internal;
+    std::vector<std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>>> quads;
+
+    this->get_quardpartitions(&internal, &quads, dict);
+    // std::unordered_set<Node *> deep_search_branches;
+    for (index_t i = 0; i < internal.size(); i++) {
+        if (internal[i]->min_pvalue <= alpha) {
+            std::cout << "Deep search for branch id " << internal[i]->blob_id << " with min p-value: " << internal[i]->min_pvalue << std::endl;
+            std::cout << "The old minimizer for branch id " << internal[i]->blob_id << ": [" << dict->index2label(internal[i]->minimizer[0]) << "/" << dict->index2label(internal[i]->minimizer[1]) << "/" << dict->index2label(internal[i]->minimizer[2]) << "/" << dict->index2label(internal[i]->minimizer[3]) << "]" << std::endl;
+            internal[i]->min_pvalue = deep_search_from_3f1a(gene_trees, &quads[i], internal[i]->minimizer, internal[i]->blob_id, qcf_writer.get());
+            std::cout << "Updated min p-value for branch id " << internal[i]->blob_id << ": " << internal[i]->min_pvalue << std::endl;
+            std::cout << "The new minimizer for branch id " << internal[i]->blob_id << ": [" << dict->index2label(internal[i]->minimizer[0]) << "/" << dict->index2label(internal[i]->minimizer[1]) << "/" << dict->index2label(internal[i]->minimizer[2]) << "/" << dict->index2label(internal[i]->minimizer[3]) << "]" << std::endl;
+        }
+    }
+
+}
+///////
 
 
 // 2f2a search algorithm O(n^3)
@@ -1963,6 +2013,378 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* di
 }
 
 // main constructor for tob, which enable what kind of search algorithm to use for computing the min p-value for each branch in the input tree
+// SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict, 
+//                          SpeciesTree* display, 
+//                          unsigned long int iter_limit_blob, 
+//                          bool three_fix_one_alter,
+//                          bool two_fix_two_alter, 
+//                          bool is_quard,
+//                          std::string output_qcfs_table_file,
+//                          std::string cv_quartet_sampling_mode,
+//                          std::size_t cv_max_quartets_per_edge,
+//                          std::size_t cv_outer_folds,
+//                          std::size_t cv_inner_folds,
+//                          std::size_t cv_repeats,
+//                          std::size_t cv_seed,
+//                          std::size_t min_observed_loci,
+//                          weight_t min_coverage_fraction
+//                          ) {
+
+//     std::unique_ptr<QCFWriter> qcf_writer = nullptr; 
+//     if (!output_qcfs_table_file.empty()) {
+//         qcf_writer = std::make_unique<QCFWriter>(
+//             output_qcfs_table_file,
+//             dict
+//         );
+//     }
+
+
+//     /*
+//      * Cross-validated sparse-exception mode.
+//      *
+//      * A non-empty cv_quartet_sampling_mode selects the CVSE algorithm and
+//      * takes precedence over the legacy p-value search flags above. Accepted
+//      * values are "3f1a" and "2f2a".
+//      */
+//     if (!cv_quartet_sampling_mode.empty()) {
+//         const cvse::CVQuartetSamplingMode sampling_mode =
+//             cvse::parse_cv_quartet_sampling_mode(cv_quartet_sampling_mode);
+//         const cvse::CVSEWeightingMode weighting_mode =
+//             cvse::parse_cvse_weighting_mode(cv_quartet_sampling_mode);
+
+//         cvse::CVSEConfig cv_config;
+//         cv_config.weighting_mode = weighting_mode;
+//         cv_config.outer_folds = std::max<std::size_t>(2, cv_outer_folds);
+//         cv_config.inner_folds = std::max<std::size_t>(2, cv_inner_folds);
+//         cv_config.repeats = std::max<std::size_t>(1, cv_repeats);
+//         cv_config.max_quartets_per_edge = cv_max_quartets_per_edge;
+//         cv_config.seed = cv_seed;
+//         cv_config.min_observed_loci = min_observed_loci;
+//         cv_config.min_coverage_fraction = min_coverage_fraction;
+//         std::cout << "Constructing tree of blobs using nested locus-level "
+//                      "cross-validation with "
+//                   << cv_quartet_sampling_mode
+//                   << " quartet sampling; weighting="
+//                   << cvse::cvse_weighting_mode_name(cv_config.weighting_mode)
+//                   << std::endl;
+//         std::cout << "CV settings: outer folds=" << cv_config.outer_folds
+//                   << ", inner folds=" << cv_config.inner_folds
+//                   << ", repeats=" << cv_config.repeats
+//                   << ", max quartets per edge="
+//                   << cv_config.max_quartets_per_edge
+//                   << ", pseudocount=" << cv_config.pseudocount
+//                   << ", min observed loci=" << cv_config.min_observed_loci
+//                   << ", min coverage fraction=" << cv_config.min_coverage_fraction
+//                   << ", seed=" << cv_config.seed << std::endl;
+
+
+//         // R is needed only when the optional QCF CSV requests legacy
+//         // quartet-test p-values. The CVSE algorithm itself is pure C++.
+//         if (qcf_writer != nullptr) {
+//             add_r_libpaths_and_load(RINS);
+//         }
+//         for (Tree *tree : input) {
+//             tree->LCA_preprocessing_with_ett_rmq_sparse_table();
+//         }
+
+//         display->refine();
+//         this->dict = display->dict;
+
+//         std::vector<Node *> internal;
+//         std::vector<std::tuple<std::vector<Node *>, std::vector<Node *>,
+//                                std::vector<Node *>, std::vector<Node *>>> quads;
+//         std::vector<std::pair<std::vector<Node *>, std::vector<Node *>>> bips;
+
+//         if (sampling_mode == cvse::CVQuartetSamplingMode::ThreeFixOneAlter) {
+//             display->get_quardpartitions(&internal, &quads, dict);
+//         } else {
+//             display->get_bipartitions(&internal, &bips);
+//         }
+
+//         std::cout << internal.size() << " branches to evaluate by CVSE"
+//                   << std::endl;
+
+//         std::unordered_set<Node *> false_positive;
+
+//         for (std::size_t branch = 0; branch < internal.size(); ++branch) {
+//             Node *node = internal[branch];
+//             node->blob_id = static_cast<index_t>(branch);
+
+//             std::cout << "Testing branch id " << branch << " by CVSE, ";
+
+//             if (node->isfake) {
+//                 false_positive.insert(node);
+//                 std::cout << "fake ***" << std::endl;
+//                 continue;
+//             }
+
+//             std::vector<cvse::CVSECandidate> candidates;
+//             const unsigned branch_seed =
+//                 cv_config.seed + static_cast<unsigned>(1000003ULL * branch);
+
+            
+//             if (sampling_mode == cvse::CVQuartetSamplingMode::ThreeFixOneAlter) {
+//                 const auto& quad = quads[branch];
+//                 const std::array<const std::vector<Node*>*, 4> node_partitions = {{
+//                     &std::get<0>(quad),
+//                     &std::get<1>(quad),
+//                     &std::get<2>(quad),
+//                     &std::get<3>(quad)
+//                 }};
+//                 std::array<std::vector<index_t>, 4> partition_indices;
+
+//                 for (std::size_t partition = 0; partition < 4; ++partition) {
+//                     partition_indices[partition].reserve(
+//                         node_partitions[partition]->size());
+//                         for (Node* node_in_partition : *node_partitions[partition]) {
+//                             partition_indices[partition].push_back(node_in_partition->index);
+//                         }
+//                     }
+//                     candidates = cvse::generate_3f1a_cvse_candidates(partition_indices, cv_config.max_quartets_per_edge,branch_seed);
+//                 } else {
+//                     std::vector<index_t> left_indices;std::vector<index_t> right_indices;
+//                     left_indices.reserve(bips[branch].first.size());right_indices.reserve(bips[branch].second.size());for (Node* node_on_left : bips[branch].first) {left_indices.push_back(node_on_left->index);}
+//                     for (Node* node_on_right : bips[branch].second) {right_indices.push_back(node_on_right->index);}
+//                     candidates = cvse::generate_2f2a_cvse_candidates(left_indices,right_indices,cv_config.max_quartets_per_edge, branch_seed);}
+
+//                     if (candidates.empty()) {
+//                     std::cout << "no valid sampled quartets; keeping edge" << std::endl;
+//                     continue;
+//                     }
+
+//             cvse::CVSEConfig branch_config = cv_config;
+//             branch_config.seed = branch_seed;
+//             const cvse::CVSEResult cv_result = cvse::run_cvse_for_edge(
+//                 input, candidates, branch_config
+//             );
+
+//             if (qcf_writer != nullptr) {
+//                 for (const cvse::CVSECandidate &candidate : candidates) {
+//                     const auto counts = cvse::full_cvse_counts_for_candidate(
+//                         input, candidate
+//                     );
+//                     weight_t qcf[3] = {
+//                         counts[0], counts[1], counts[2]
+//                     };
+//                     const weight_t quartet_pvalue =
+//                         (qcf[0] + qcf[1] + qcf[2] > 0)
+//                             ? pvalue(qcf)
+//                             : 1.0;
+//                     index_t quartet[4] = {
+//                         candidate.taxa[0], candidate.taxa[1],
+//                         candidate.taxa[2], candidate.taxa[3]
+//                     };
+//                     qcf_writer->write(
+//                         static_cast<index_t>(branch),
+//                         quartet,
+//                         counts,
+//                         quartet_pvalue
+//                     );
+//                 }
+//             }
+
+//             if (cv_result.representative_candidate !=
+//                 std::numeric_limits<std::size_t>::max()) {
+//                 const cvse::CVSECandidate &representative =
+//                     candidates[cv_result.representative_candidate];
+//                 const auto representative_counts =
+//                     cvse::full_cvse_counts_for_candidate(input, representative);
+
+//                 for (int i = 0; i < 4; ++i) {
+//                     node->minimizer[i] = representative.taxa[i];
+//                 }
+//                 for (int i = 0; i < 3; ++i) {
+//                     node->min_f[i] = representative_counts[i];
+//                 }
+//             }
+
+//             if (cv_result.non_tree_like) {
+//                 false_positive.insert(node);
+//             }
+
+//             std::cout << "sampled quartets=" << candidates.size()
+//                       << "; median selected k="
+//                       << cv_result.median_selected_k
+//                       << "; outer CV gain="
+//                       << cv_result.mean_outer_gain
+//                       << " +/- " << cv_result.se_outer_gain;
+
+//             if (branch_config.weighting_mode ==
+//                 cvse::CVSEWeightingMode::StructuralCoherence) {
+//                 std::cout
+//                     << "; best(alpha,eta)="
+//                     << cv_result.mean_best_alpha << ","
+//                     << cv_result.mean_best_eta
+//                     << "; selected(alpha,eta)="
+//                     << cv_result.mean_selected_alpha << ","
+//                     << cv_result.mean_selected_eta
+//                     << "; inner best gain="
+//                     << cv_result.mean_best_inner_gain
+//                     << " +/- " << cv_result.mean_best_inner_se
+//                     << "; inner selected gain="
+//                     << cv_result.mean_selected_inner_gain
+//                     << " +/- " << cv_result.mean_selected_inner_se
+//                     << "; 1SE threshold="
+//                     << cv_result.mean_one_se_threshold
+//                     << "; directional fraction="
+//                     << cv_result.mean_directional_candidate_fraction
+//                     << "; row prevalence mean/max="
+//                     << cv_result.mean_row_prevalence << "/"
+//                     << cv_result.max_row_prevalence
+//                     << "; col prevalence mean/max="
+//                     << cv_result.mean_column_prevalence << "/"
+//                     << cv_result.max_column_prevalence
+//                     << "; structural support mean/max="
+//                     << cv_result.mean_structural_support << "/"
+//                     << cv_result.max_structural_support;
+//             } else if (branch_config.weighting_mode ==
+//                        cvse::CVSEWeightingMode::Soft) {
+//                 std::cout << "; mean selected alpha="
+//                           << cv_result.mean_selected_alpha;
+//             }
+
+//             std::cout
+//                 << "; selected types [wrong-1/wrong-2/asymmetric]="
+//                 << cv_result.selected_alternative_types[0] << "/"
+//                 << cv_result.selected_alternative_types[1] << "/"
+//                 << cv_result.selected_alternative_types[2]
+//                 << "; decision="
+//                 << (cv_result.non_tree_like
+//                         ? "contract/non-tree"
+//                         : "keep/tree")
+//                 << std::endl;
+    
+//         }
+
+//         // Preserve the existing handling of the artificial rooted edge.
+//         if (display->root->children.size() == 2) {
+//             false_positive.insert(display->root->children[1]);
+//         }
+
+//         this->dict = display->dict;
+//         root = build_refinement(display->root, false_positive);
+//         return;
+//     }
+
+
+    
+//     if (!three_fix_one_alter && !is_quard && !two_fix_two_alter) {
+//        SpeciesTree(input, dict, display, iter_limit_blob, qcf_writer.get());
+//        return;
+//     }
+
+//     if (two_fix_two_alter && three_fix_one_alter) {
+//         std::cerr << "Error: both two_fix_two_alter and three_fix_one_alter cannot be true at the same time." << std::endl;
+//         return;
+//     }
+
+//     if (two_fix_two_alter && is_quard) {
+//         std::cerr << "Error: both two_fix_two_alter and is_quard cannot be true at the same time." << std::endl;
+//         return;
+//     }
+
+//     if (two_fix_two_alter) {
+//         SpeciesTree(input, dict, display, qcf_writer.get());
+//         return;
+//     }
+    
+//     if (is_quard){
+//         std::cout << "Constructing tree of blobs using quard search" << std::endl;
+//     } else if (three_fix_one_alter) {
+//         std::cout << "Constructing tree of blobs using 3-fix-1-alter search" << std::endl;
+//     }
+
+//     add_r_libpaths_and_load(RINS);
+//     // for (Tree *t : input) t->LCA_preprocessing();
+
+//     for (Tree *t : input) t->LCA_preprocessing_with_ett_rmq_sparse_table();
+
+//     display->refine();
+
+//     this->dict = display->dict;
+
+//     //std::string mode = "n";
+//     //display->annotate(input, mode);
+    
+//     std::vector<Node *> internal;
+    
+//     std::vector<std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>>> quads;
+//     display->get_quardpartitions(&internal, &quads, dict);
+//     std::cout << quads.size() << " branches to test" << std::endl;
+
+//     std::unordered_set<Node *> false_positive;
+//     for (index_t i = 0; i < internal.size(); i ++) {
+//         std::cout << "Testing branch id " << i << ", ";
+//         internal[i]->blob_id = i;
+
+//         if (internal[i]->isfake) {
+//             false_positive.insert(internal[i]);
+//             std::cout << "fake ***" << std::endl;
+//             continue;
+//         }
+
+
+//         // Search for min p-value for quartet tree tests
+//         weight_t min;
+//         index_t minimizer[4];
+//         size_t match_count = 0;
+//         size_t mismatch_count = 0;
+//         if (three_fix_one_alter) {
+            
+//             min = search_3f1a(input, &quads[i], minimizer, i, qcf_writer.get());
+            
+//         }   
+//         else if (is_quard) {
+//             min = search_quard(input, &quads[i], minimizer, i, qcf_writer.get()); 
+//         }
+            
+
+//         internal[i]->min_pvalue = min;
+
+//         // Get qCFs that yielded the min p-value
+//         weight_t min_f[3];
+//         get_qCFs(input, minimizer, min_f);
+//         internal[i]->min_f[0] = min_f[0];
+//         internal[i]->min_f[1] = min_f[1];
+//         internal[i]->min_f[2] = min_f[2];
+
+//         internal[i]->minimizer[0] = minimizer[0];
+//         internal[i]->minimizer[1] = minimizer[1];
+//         internal[i]->minimizer[2] = minimizer[2];
+//         internal[i]->minimizer[3] = minimizer[3];
+//         if (two_fix_two_alter) {
+//             internal[i]->split_match_count = match_count;
+//             internal[i]->split_mismatch_count = mismatch_count;
+//         }
+//         // Apply quartet star test
+//         weight_t max = -1.0;
+//         if ((min_f[0] + min_f[1] + min_f[2]) > 0)
+//             max = pvalue_star(min_f);
+//         internal[i]->max_pvalue = max;
+//         //if ((internal[i]->f[0] + internal[i]->f[1] + internal[i]->f[2]) > 0)
+//         //    max = pvalue_star(internal[i]->f);
+
+//         // Write to standard out
+//         std::cout << "QTT: " << min << "; ";
+//         std::cout << "QST: " << max << "; ";
+//         std::cout << "qCF: [" << min_f[0] << "/" << min_f[1] << "/" << min_f[2] << "]; ";
+//         std::cout << "minimizer: [" << dict->index2label(minimizer[0]) << "/" << dict->index2label(minimizer[1]) << "/" << dict->index2label(minimizer[2]) << "/" << dict->index2label(minimizer[3]) << "]";
+//         std::cout << std::endl;
+//         //std::cout << "QTT: " << min << " ";
+//         //std::cout << "qCF: [" << internal[i]->min_f[0] << "/" << internal[i]->min_f[1] << "/" << internal[i]->min_f[2] << "] ";
+//         //std::cout << "minimizer: [" << dict->index2label(minimizer[0]) << "/" << dict->index2label(minimizer[1]) << "/" << dict->index2label(minimizer[2]) << "/" << dict->index2label(minimizer[3]) << "] ";
+//         //std::cout << "QST: " << max << " ";
+//         //std::cout << "[" << internal[i]->f[0] << "/" << internal[i]->f[1] << "/" << internal[i]->f[2] << "]";
+//         //std::cout << std::endl;
+//     }
+
+//     if (display->root->children.size() == 2) {
+//         false_positive.insert(display->root->children[1]);
+//     }
+
+//     this->dict = display->dict;
+//     root = build_refinement(display->root, false_positive);
+// }
 
 SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict, 
                          SpeciesTree* display, 
@@ -1970,7 +2392,15 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict,
                          bool three_fix_one_alter,
                          bool two_fix_two_alter, 
                          bool is_quard,
-                         std::string output_qcfs_table_file
+                         std::string output_qcfs_table_file,
+                         std::string cv_quartet_sampling_mode,
+                         std::size_t cv_max_quartets_per_edge,
+                         std::size_t cv_outer_folds,
+                         std::size_t cv_inner_folds,
+                         std::size_t cv_repeats,
+                         std::size_t cv_seed,
+                         std::size_t min_observed_loci,
+                         weight_t min_coverage_fraction
                          ) {
 
     std::unique_ptr<QCFWriter> qcf_writer = nullptr; 
@@ -1980,6 +2410,212 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict,
             dict
         );
     }
+
+
+    /*
+     * Cross-validated sparse-exception mode.
+     *
+     * A non-empty cv_quartet_sampling_mode selects the CVSE algorithm and
+     * takes precedence over the legacy p-value search flags above. Accepted
+     * values are 3f1a[-hard|-soft] and 2f2a[-hard|-soft].
+     */
+    if (!cv_quartet_sampling_mode.empty()) {
+        const cvse::CVQuartetSamplingMode sampling_mode =
+            cvse::parse_cv_quartet_sampling_mode(cv_quartet_sampling_mode);
+        const cvse::CVSEWeightingMode weighting_mode =
+            cvse::parse_cvse_weighting_mode(cv_quartet_sampling_mode);
+
+        cvse::CVSEConfig cv_config;
+        cv_config.weighting_mode = weighting_mode;
+        cv_config.outer_folds = std::max<std::size_t>(2, cv_outer_folds);
+        cv_config.inner_folds = std::max<std::size_t>(2, cv_inner_folds);
+        cv_config.repeats = std::max<std::size_t>(1, cv_repeats);
+        cv_config.max_quartets_per_edge = cv_max_quartets_per_edge;
+        cv_config.seed = cv_seed;
+        cv_config.min_observed_loci = min_observed_loci;
+        cv_config.min_coverage_fraction = min_coverage_fraction;
+        std::cout << "Constructing tree of blobs using nested locus-level "
+                     "cross-validation with "
+                  << cv_quartet_sampling_mode
+                  << " quartet sampling; weighting="
+                  << cvse::cvse_weighting_mode_name(cv_config.weighting_mode)
+                  << std::endl;
+        std::cout << "CV settings: outer folds=" << cv_config.outer_folds
+                  << ", inner folds=" << cv_config.inner_folds
+                  << ", repeats=" << cv_config.repeats
+                  << ", max quartets per edge="
+                  << cv_config.max_quartets_per_edge
+                  << ", pseudocount=" << cv_config.pseudocount
+                  << ", min observed loci=" << cv_config.min_observed_loci
+                  << ", min coverage fraction=" << cv_config.min_coverage_fraction
+                  << ", seed=" << cv_config.seed << std::endl;
+
+
+        // R is needed only when the optional QCF CSV requests legacy
+        // quartet-test p-values. The CVSE algorithm itself is pure C++.
+        if (qcf_writer != nullptr) {
+            add_r_libpaths_and_load(RINS);
+        }
+        for (Tree *tree : input) {
+            tree->LCA_preprocessing_with_ett_rmq_sparse_table();
+        }
+
+        display->refine();
+        this->dict = display->dict;
+
+        std::vector<Node *> internal;
+        std::vector<std::tuple<std::vector<Node *>, std::vector<Node *>,
+                               std::vector<Node *>, std::vector<Node *>>> quads;
+        std::vector<std::pair<std::vector<Node *>, std::vector<Node *>>> bips;
+
+        if (sampling_mode == cvse::CVQuartetSamplingMode::ThreeFixOneAlter) {
+            display->get_quardpartitions(&internal, &quads, dict);
+        } else {
+            display->get_bipartitions(&internal, &bips);
+        }
+
+        std::cout << internal.size() << " branches to evaluate by CVSE"
+                  << std::endl;
+
+        std::unordered_set<Node *> false_positive;
+
+        for (std::size_t branch = 0; branch < internal.size(); ++branch) {
+            Node *node = internal[branch];
+            node->blob_id = static_cast<index_t>(branch);
+
+            std::cout << "Testing branch id " << branch << " by CVSE, ";
+
+            if (node->isfake) {
+                false_positive.insert(node);
+                std::cout << "fake ***" << std::endl;
+                continue;
+            }
+
+            std::vector<cvse::CVSECandidate> candidates;
+            const unsigned branch_seed =
+                cv_config.seed + static_cast<unsigned>(1000003ULL * branch);
+
+            
+            if (sampling_mode == cvse::CVQuartetSamplingMode::ThreeFixOneAlter) {
+                const auto& quad = quads[branch];
+                const std::array<const std::vector<Node*>*, 4> node_partitions = {{
+                    &std::get<0>(quad),
+                    &std::get<1>(quad),
+                    &std::get<2>(quad),
+                    &std::get<3>(quad)
+                }};
+                std::array<std::vector<index_t>, 4> partition_indices;
+
+                for (std::size_t partition = 0; partition < 4; ++partition) {
+                    partition_indices[partition].reserve(
+                        node_partitions[partition]->size());
+                        for (Node* node_in_partition : *node_partitions[partition]) {
+                            partition_indices[partition].push_back(node_in_partition->index);
+                        }
+                    }
+                    candidates = cvse::generate_3f1a_cvse_candidates(partition_indices, cv_config.max_quartets_per_edge,branch_seed);
+                } else {
+                    std::vector<index_t> left_indices;std::vector<index_t> right_indices;
+                    left_indices.reserve(bips[branch].first.size());right_indices.reserve(bips[branch].second.size());for (Node* node_on_left : bips[branch].first) {left_indices.push_back(node_on_left->index);}
+                    for (Node* node_on_right : bips[branch].second) {right_indices.push_back(node_on_right->index);}
+                    candidates = cvse::generate_2f2a_cvse_candidates(left_indices,right_indices,cv_config.max_quartets_per_edge, branch_seed);}
+
+                    if (candidates.empty()) {
+                    std::cout << "no valid sampled quartets; keeping edge" << std::endl;
+                    continue;
+                    }
+
+            cvse::CVSEConfig branch_config = cv_config;
+            branch_config.seed = branch_seed;
+            const cvse::CVSEResult cv_result = cvse::run_cvse_for_edge(
+                input, candidates, branch_config
+            );
+
+            if (qcf_writer != nullptr) {
+                for (const cvse::CVSECandidate &candidate : candidates) {
+                    const auto counts = cvse::full_cvse_counts_for_candidate(
+                        input, candidate
+                    );
+                    weight_t qcf[3] = {
+                        counts[0], counts[1], counts[2]
+                    };
+                    const weight_t quartet_pvalue =
+                        (qcf[0] + qcf[1] + qcf[2] > 0)
+                            ? pvalue(qcf)
+                            : 1.0;
+                    index_t quartet[4] = {
+                        candidate.taxa[0], candidate.taxa[1],
+                        candidate.taxa[2], candidate.taxa[3]
+                    };
+                    qcf_writer->write(
+                        static_cast<index_t>(branch),
+                        quartet,
+                        counts,
+                        quartet_pvalue
+                    );
+                }
+            }
+
+            if (cv_result.representative_candidate !=
+                std::numeric_limits<std::size_t>::max()) {
+                const cvse::CVSECandidate &representative =
+                    candidates[cv_result.representative_candidate];
+                const auto representative_counts =
+                    cvse::full_cvse_counts_for_candidate(input, representative);
+
+                for (int i = 0; i < 4; ++i) {
+                    node->minimizer[i] = representative.taxa[i];
+                }
+                for (int i = 0; i < 3; ++i) {
+                    node->min_f[i] = representative_counts[i];
+                }
+            }
+
+            if (cv_result.non_tree_like) {
+                false_positive.insert(node);
+            }
+
+            std::cout << "sampled quartets=" << candidates.size();
+
+            if (branch_config.weighting_mode ==
+                cvse::CVSEWeightingMode::HardTopK) {
+                std::cout << "; median selected k="
+                          << cv_result.median_selected_k;
+            } else {
+                std::cout << "; median active candidates="
+                          << cv_result.median_selected_k
+                          << "; mean selected alpha="
+                          << cv_result.mean_selected_alpha;
+            }
+
+            std::cout << "; outer CV gain="
+                      << cv_result.mean_outer_gain
+                      << " +/- " << cv_result.se_outer_gain;
+
+            std::cout
+                << "; selected types [wrong-1/wrong-2/asymmetric]="
+                << cv_result.selected_alternative_types[0] << "/"
+                << cv_result.selected_alternative_types[1] << "/"
+                << cv_result.selected_alternative_types[2]
+                << "; decision="
+                << (cv_result.non_tree_like
+                        ? "contract/non-tree"
+                        : "keep/tree")
+                << std::endl;
+    
+        }
+
+        // Preserve the existing handling of the artificial rooted edge.
+        if (display->root->children.size() == 2) {
+            false_positive.insert(display->root->children[1]);
+        }
+
+        this->dict = display->dict;
+        root = build_refinement(display->root, false_positive);
+        return;
+    }
+
+
     
     if (!three_fix_one_alter && !is_quard && !two_fix_two_alter) {
        SpeciesTree(input, dict, display, iter_limit_blob, qcf_writer.get());
@@ -2100,6 +2736,7 @@ SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict,
 }
 
 
+
 // O(n*cn*klogn), O(kn^3logn) if c is O(n)
 SpeciesTree::SpeciesTree(std::vector<Tree *> &input, Dict *dict, 
                          SpeciesTree* display,
@@ -2191,47 +2828,120 @@ std::string SpeciesTree::to_string_pvalue() {
     return display_tree_pvalue(root) + ";";
 }
 
+// std::string SpeciesTree::display_tree_pvalue(Node *root) {
+//     if (root->children.size() == 0) 
+//         return dict->index2label(root->index);
+//     std::string s = "(";
+//     for (Node * node : root->children) 
+//         s += display_tree_pvalue(node) + ",";
+//     s[s.size() - 1] = ')';
+//     if (root->parent != NULL && (root->parent->parent != NULL || (root->parent->parent == NULL && root == root->parent->children[0]))) {
+//         std::ostringstream ss;
+//         // serialize the minimizer and qCFs
+//         ss << std::scientific << std::setprecision(12) 
+//                               << "'[" 
+//                               << "blob_id=" << std::to_string(root->blob_id)
+//                               << ";qtt_p=" << (double) root->min_pvalue
+//                               << ";qst_p=" << (double) root->max_pvalue 
+//                               << ";qcf_1=" << std::to_string((int) root->min_f[0])
+//                               << ";qcf_2=" << std::to_string((int) root->min_f[1])
+//                               << ";qcf_3=" << std::to_string((int) root->min_f[2])
+//                               << ";minimizer=" << dict->index2label(root->minimizer[0]) << "/" << dict->index2label(root->minimizer[1]) << "/" << dict->index2label(root->minimizer[2]) << "/" << dict->index2label(root->minimizer[3])
+//                              << ";split_match_count=" << root->split_match_count
+//                              << ";split_mismatch_count=" << root->split_mismatch_count
+//                               << "]'";
+//         return s + ss.str();
+//     }
+//     else {
+//         return s;
+//     }
+// }
+
+
 std::string SpeciesTree::display_tree_pvalue(Node *root) {
-    if (root->children.size() == 0) 
-        return dict->index2label(root->index);
-    std::string s = "(";
-    for (Node * node : root->children) 
-        s += display_tree_pvalue(node) + ",";
-    s[s.size() - 1] = ')';
-    if (root->parent != NULL && (root->parent->parent != NULL || (root->parent->parent == NULL && root == root->parent->children[0]))) {
-        std::ostringstream ss;
-        // serialize the minimizer and qCFs
-        ss << std::scientific << std::setprecision(12) 
-                              << "'[" 
-                              << "blob_id=" << std::to_string(root->blob_id)
-                              << ";qtt_p=" << (double) root->min_pvalue
-                              << ";qst_p=" << (double) root->max_pvalue 
-                              << ";qcf_1=" << std::to_string((int) root->min_f[0])
-                              << ";qcf_2=" << std::to_string((int) root->min_f[1])
-                              << ";qcf_3=" << std::to_string((int) root->min_f[2])
-                              << ";minimizer=" << dict->index2label(root->minimizer[0]) << "/" << dict->index2label(root->minimizer[1]) << "/" << dict->index2label(root->minimizer[2]) << "/" << dict->index2label(root->minimizer[3])
-                             << ";split_match_count=" << root->split_match_count
-                             << ";split_mismatch_count=" << root->split_mismatch_count
-                              << "]'";
-        return s + ss.str();
+    std::ostringstream ss;
+
+    if (root->children.empty()) {
+        // Leaf label
+        ss << dict->index2label(root->index);
     }
     else {
-        return s;
+        // Internal topology
+        ss << "(";
+
+        for (size_t i = 0; i < root->children.size(); ++i) {
+            if (i > 0) {
+                ss << ",";
+            }
+
+            ss << display_tree_pvalue(root->children[i]);
+        }
+
+        ss << ")";
+
+        // Keep the existing rule controlling which internal branches
+        // receive the p-value annotation.
+        const bool write_pvalue_annotation =
+            root->parent != nullptr &&
+            (
+                root->parent->parent != nullptr ||
+                (
+                    root->parent->parent == nullptr &&
+                    root == root->parent->children[0]
+                )
+            );
+
+        if (write_pvalue_annotation) {
+            ss << std::scientific
+               << std::setprecision(12)
+               << "'["
+               << "blob_id=" << root->blob_id
+               << ";qtt_p=" << static_cast<double>(root->min_pvalue)
+               << ";qst_p=" << static_cast<double>(root->max_pvalue)
+               << ";qcf_1=" << static_cast<int>(root->min_f[0])
+               << ";qcf_2=" << static_cast<int>(root->min_f[1])
+               << ";qcf_3=" << static_cast<int>(root->min_f[2])
+               << ";minimizer="
+               << dict->index2label(root->minimizer[0]) << "/"
+               << dict->index2label(root->minimizer[1]) << "/"
+               << dict->index2label(root->minimizer[2]) << "/"
+               << dict->index2label(root->minimizer[3])
+               << ";split_match_count=" << root->split_match_count
+               << ";split_mismatch_count=" << root->split_mismatch_count
+               << "]'";
+        }
     }
+
+    // A node's length represents the edge from its parent to this node.
+    // Therefore, write a length for every non-root node, independently
+    // of whether the node has a p-value annotation.
+    if (root->parent != nullptr) {
+        ss << ":"
+           << std::scientific
+           << std::setprecision(12)
+           << static_cast<double>(root->length);
+    }
+
+    return ss.str();
 }
 
-Node *SpeciesTree::build_refinement(Node *root, std::unordered_set<Node *> false_positive) {
+Node *SpeciesTree::build_refinement(Node *root, const std::unordered_set<Node *> &false_positive) {
     if (root->children.size() == 0) {
         Node *new_root = new Node(root->index, false);
+        new_root->length = root->length;
+        new_root->support = root->support;
         index2node[new_root->index] = new_root;
         return new_root;
     }
     else {
         Node *new_root = new Node(pseudonym(), false_positive.find(root) != false_positive.end());
+        new_root->length = root->length;
+        new_root->support = root->support;
         for (Node *child : root->children) {
             Node *new_child = build_refinement(child, false_positive);
             if (! new_child->isfake) {
                 new_root->children.push_back(new_child);
+                
             }
             else {
                 for (Node *grand_child : new_child->children) 
@@ -2242,6 +2952,7 @@ Node *SpeciesTree::build_refinement(Node *root, std::unordered_set<Node *> false
         }
         for (Node *new_child : new_root->children) 
             new_child->parent = new_root;
+
         return new_root;
     }
 }
@@ -2897,6 +3608,143 @@ size_t SpeciesTree::neighbor_search_quard(std::vector<Tree *> &input,
 
 
 
+weight_t SpeciesTree::deep_search_from_3f1a(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer, index_t branch_id,
+    QCFWriter* qcf_writer) {
+        auto &t = *quad;
+
+    /*
+     * Preserve the original 3f1a minimizer.
+     *
+     * Every candidate quartet in this search differs from this
+     * original quartet in at most one taxon.
+     */
+    const std::array<index_t, 4> old_minimizer = {
+        minimizer[0],
+        minimizer[1],
+        minimizer[2],
+        minimizer[3]
+    };
+
+    std::array<index_t, 4> best_minimizer = old_minimizer;
+
+    /*
+     * Begin with the p-value of the original 3f1a minimizer.
+     * Therefore, if the deeper search finds nothing better, the
+     * original result is preserved.
+     */
+    index_t initial_quartet[4] = {
+        old_minimizer[0],
+        old_minimizer[1],
+        old_minimizer[2],
+        old_minimizer[3]
+    };
+
+    auto [min_pvalue, initial_qcfs] =
+        get_pvalue_and_qCFs(
+            input,
+            initial_quartet,
+            branch_id,
+            qcf_writer
+        );
+
+    /*
+     * Store pointers to the four original quadrapartition buckets.
+     *
+     * Bipartition:
+     *
+     *     partitions 0 and 1 | partitions 2 and 3
+     */
+    const std::array<const std::vector<Node *> *, 4> partitions = {
+        &std::get<0>(t),
+        &std::get<1>(t),
+        &std::get<2>(t),
+        &std::get<3>(t)
+    };
+
+    for (index_t alter = 0; alter < 4; ++alter) {
+        /*
+         * Positions 0 and 1 draw candidates from the left side.
+         * Positions 2 and 3 draw candidates from the right side.
+         */
+        const index_t first_partition = alter < 2 ? 0 : 2;
+        const index_t last_partition  = first_partition + 1;
+
+        
+
+        for (index_t partition = first_partition;
+             partition <= last_partition;
+             ++partition) {
+
+            for (const Node *candidate_node : *partitions[partition]) {
+                const index_t candidate = candidate_node->index;
+
+                /*
+                 * The original quartet has already been evaluated.
+                 */
+                if (candidate == old_minimizer[alter]) {
+                    continue;
+                }
+
+                /*
+                 * Do not produce a quartet containing the same taxon
+                 * more than once.
+                 */
+                bool duplicates_fixed_taxon = false;
+
+                for (index_t j = 0; j < 4; ++j) {
+                    if (j != alter && candidate == old_minimizer[j]) {
+                        duplicates_fixed_taxon = true;
+                        break;
+                    }
+                }
+
+                if (duplicates_fixed_taxon) {
+                    continue;
+                }
+
+                /*
+                 * Always restart from the original 3f1a minimizer.
+                 * Only position "alter" is changed.
+                 */
+                index_t current_quartet[4] = {
+                    old_minimizer[0],
+                    old_minimizer[1],
+                    old_minimizer[2],
+                    old_minimizer[3]
+                };
+
+                current_quartet[alter] = candidate;
+
+                auto [score, qcfs] =
+                    get_pvalue_and_qCFs(
+                        input,
+                        current_quartet,
+                        branch_id,
+                        qcf_writer
+                    );
+
+                if (score >= 0.0 &&
+                    (min_pvalue < 0.0 || score < min_pvalue)) {
+
+                    min_pvalue = score;
+
+                    for (index_t j = 0; j < 4; ++j) {
+                        best_minimizer[j] = current_quartet[j];
+                    }
+                }
+            }
+        }
+    }
+
+    /*
+     * Replace the input minimizer only after the complete search.
+     */
+    for (index_t j = 0; j < 4; ++j) {
+        minimizer[j] = best_minimizer[j];
+    }
+
+    return min_pvalue; 
+}
 
 
 
@@ -3350,7 +4198,7 @@ SpeciesTree::get_pvalue_and_qCFs(
      * deduplicates by branch ID and quartet.
      */
     if (qcf_writer != nullptr) {
-        qcf_writer->write(branch_id, temp, qcfs);
+        qcf_writer->write(branch_id, temp, qcfs, pvalues.at(q));
     }
 
     return {pvalues.at(q), qcfs};

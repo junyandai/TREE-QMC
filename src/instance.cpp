@@ -32,6 +32,7 @@ Instance::Instance(int argc, char **argv) {
     blob = false;
     store_pvalue = false;
     load_pvalue = false;
+    deep_search = false;
     enable_split_test = false;
     three_fix_one_alter = false;
     two_fix_two_alter = false;
@@ -39,6 +40,17 @@ Instance::Instance(int argc, char **argv) {
     network = false;
     write_qcfs = false;
     override_file = false;
+
+    /// for cvse
+    cv_quartet_sampling_mode = "";
+    cv_max_quartets = 0;
+    cv_outer_folds = 5;
+    cv_inner_folds = 4;
+    cv_repeats = 1;
+    cv_seed = 42;
+    min_observed_loci = 0;
+    min_coverage_fraction = 0.0;
+
 
     support_low = 0.0;
     support_high = 1.0;
@@ -150,8 +162,16 @@ long long Instance::solve() {
     // Build or read species tree
     if (load_pvalue) {
         #if ENABLE_TOB
-            std::cout << "Loading species tree with p-values" << root_str << std::endl;
-            output = new SpeciesTree(input[0], dict, alpha, beta, enable_split_test);
+            if (!deep_search) {
+                std::cout << "Loading species tree with p-values" << root_str << std::endl;
+                output = new SpeciesTree(input[0], dict, alpha, beta, enable_split_test);
+            } else {
+                std::cout << "Loading species tree with p-values and performing deep search from " << annotation_tree_file << std::endl;
+                get_annotation_tree();
+                std::cout << "Loading species tree with p-values and performing deep search: " << root_str << std::endl;
+                output = new SpeciesTree(annotation_tree, dict, alpha, input, output_qcfs_table_file);
+            }
+            
         #else
             std::cout << "TREE-QMC was not compiled with tree of blob options!" << std::endl;
             exit(1);
@@ -205,25 +225,39 @@ long long Instance::solve() {
     }
 
     std::cout << "Printing output tree/network:" << std::endl;
-    if (!network) {
-        std::cout << output->to_string_basic() << std::endl;
-    } else {
+    if (network) {
         std::cout << output_net->to_string_basic() << std::endl;
+        
+    } else if (deep_search) {
+        std::cout << output->to_string_pvalue() << std::endl;
+    } else {
+        std::cout << output->to_string_basic() << std::endl;
     }
     
 
     if (!load_pvalue && (store_pvalue || blob)) {
         #if ENABLE_TOB
-            if (!three_fix_one_alter && !two_fix_two_alter) {
+            if (!three_fix_one_alter && !two_fix_two_alter && cv_quartet_sampling_mode == "") {
                 if (iter_limit_blob == std::numeric_limits<unsigned long int>::max()) {
                     iter_limit_blob = 2 * dict->size() * dict->size();
                     std::cout << "Setting blob iteration limit to 2*ntaxa^2 = " << iter_limit_blob << std::endl;
                 }
             }
-            SpeciesTree* display = new SpeciesTree(input, dict, output, iter_limit_blob, three_fix_one_alter, two_fix_two_alter, quard, output_qcfs_table_file);
-            delete display;
-            std::cout << "Printing output tree with pvalues:" << std::endl;
-            std::cout << output->to_string_pvalue() << std::endl;
+            SpeciesTree* display = new SpeciesTree(input, dict, output, iter_limit_blob, three_fix_one_alter, two_fix_two_alter, quard, output_qcfs_table_file, cv_quartet_sampling_mode, cv_max_quartets, cv_outer_folds, cv_inner_folds, cv_repeats, cv_seed, min_observed_loci, min_coverage_fraction);
+
+            if (cv_quartet_sampling_mode != "") {
+                delete output;
+                output = display;
+                std::cout << "Printing output tree with cross-validation results:" << std::endl;
+                std::cout << output->to_string() << std::endl;
+            } else {
+
+                delete display;
+                std::cout << "Printing output tree with pvalues:" << std::endl;
+                std::cout << output->to_string_pvalue() << std::endl;
+
+            }
+            
         #else
             std::cout << "TREE-QMC was not compiled with tree of blob options!" << std::endl;
             exit(1);
@@ -232,7 +266,7 @@ long long Instance::solve() {
 
 
     #if ENABLE_TOB
-    if (!load_pvalue && !store_pvalue && blob) {
+    if (!load_pvalue && !store_pvalue && blob && cv_quartet_sampling_mode.empty()) {
         SpeciesTree* tmp = new SpeciesTree(output, dict, alpha, beta, enable_split_test);
         delete output;
         output = tmp;
@@ -335,9 +369,11 @@ void Instance::output_solution() {
                 fout << output->to_string_pvalue() << std::endl;
             else if (network)
                 fout << output_net->to_string_basic() << std::endl;
+            else if (deep_search)
+                fout << output->to_string_pvalue() << std::endl;
             #endif  // ENABLE_TOB
             else 
-                fout << output->to_string_basic() << std::endl;
+                fout << output->to_string() << std::endl;
             fout.close();
             return;
         }
@@ -458,11 +494,87 @@ int Instance::parse(int argc, char **argv) {
                 return 2;
             }
         }
+        else if (opt == "--cv-quartet-sampling") {
+            if (i < argc - 1) {
+                cv_quartet_sampling_mode = argv[++ i];
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation quartet sampling mode specified" << std::endl;
+                return 2;
+            }
+
+        }
+        else if (opt == "--cv-max-quartets") {
+            if (i < argc - 1) {
+                cv_max_quartets = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation max quartets per edge specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--cv-outer-folds") {
+            if (i < argc - 1) {
+                cv_outer_folds = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation outer folds specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--cv-inner-folds") {
+            if (i < argc - 1) {
+                cv_inner_folds = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation inner folds specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--cv-repeats") {
+            if (i < argc - 1) {
+                cv_repeats = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation repeats specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--cv-seed") {
+            if (i < argc - 1) {
+                cv_seed = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No cross-validation seed specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--min_observed_loci") {
+            if (i < argc - 1) {
+                min_observed_loci = std::stoi(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No minimum observed loci specified" << std::endl;
+                return 2;
+            }
+        }
+        else if (opt == "--min_coverage_fraction") {
+            if (i < argc - 1) {
+                min_coverage_fraction = std::stod(argv[++ i]);
+            }
+            else {
+                std::cout << "\nERROR: No minimum coverage fraction specified" << std::endl;
+                return 2;
+            }
+        }
         else if (opt == "--store_pvalue") {
             store_pvalue = true;
         }
         else if (opt == "--load_pvalue") {
             load_pvalue = true;
+        } 
+        else if (opt == "--deepsearch") {
+            deep_search = true;
         }
         else if (opt == "--iter_limit_blob") {
             if (i < argc - 1) {

@@ -55,14 +55,16 @@ public:
             "count_AB_CD",
             "count_AC_BD",
             "count_AD_BC",
-            "resolved_gene_tree_count"
+            "resolved_gene_tree_count",
+            "T3_pvalue"
         );
     }
 
     void write(
         index_t branch_id,
         const index_t *sorted_indices,
-        const std::array<weight_t, 3> &qcfs
+        const std::array<weight_t, 3> &qcfs,
+        const weight_t &pvalue
     )
     {
         const std::array<index_t, 4> taxa = {
@@ -96,7 +98,8 @@ public:
             qcfs[0],
             qcfs[1],
             qcfs[2],
-            qcfs[0] + qcfs[1] + qcfs[2]
+            qcfs[0] + qcfs[1] + qcfs[2],
+            pvalue
         );
     }
 

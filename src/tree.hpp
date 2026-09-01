@@ -197,8 +197,10 @@ class SpeciesTree : public Tree {
         SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, bool enable_split_test);
         SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, QCFWriter* qcf_writer=nullptr);
         SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, unsigned long int iter_limit_blob, QCFWriter* qcf_writer=nullptr);
-        SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, unsigned long int iter_limit_blob, bool three_fix_one_alter, bool two_fix_two_alter, bool is_quard, std::string output_qcfs_table_file);
+        // main constructor for tob
+        SpeciesTree(std::vector<Tree *> &input, Dict *dict, SpeciesTree* display, unsigned long int iter_limit_blob, bool three_fix_one_alter, bool two_fix_two_alter, bool is_quard, std::string output_qcfs_table_file,std::string cv_quartet_sampling_mode, std::size_t cv_max_quartets_per_edge, std::size_t cv_outer_folds, std::size_t cv_inner_folds, std::size_t cv_repeats, std::size_t cv_seed,std::size_t min_observed_loci, weight_t min_coverage_fraction);
         SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, std::vector<Tree *> &gene_trees, unsigned long int iter_limit_blob);
+        SpeciesTree(Tree *input, Dict *dict, weight_t alpha, std::vector<Tree *> &gene_trees, std::string output_qcfs_table_file);/// deep search for 3f1a
         SpeciesTree(Tree *input, Dict *dict, weight_t alpha, weight_t beta, std::unordered_map<quartet_t, std::array<weight_t, 3>> &qCFs_table, unsigned long int iter_limit_blob);
         void hybrid_voting(std::vector<Tree *> &gene_trees,Dict *dict, Node * hybrid_blob, unsigned long int iter_limit, std::vector<std::unordered_set<index_t>> &banned_buckets);
         void hybrid_voting(std::unordered_map<quartet_t, std::array<weight_t, 3>> &qCFs_table, Dict *dict, Node* blob_node, unsigned long int iter_limit, std::vector<std::unordered_set<index_t>> &banned_buckets);
@@ -247,6 +249,7 @@ class SpeciesTree : public Tree {
         weight_t neighbor_search_star(std::vector<Tree *> &input, std::vector<Node *> &A, std::vector<Node *> &B, index_t *current, weight_t *min);
         weight_t search(std::vector<Tree *> &input, std::vector<Node *> &A, std::vector<Node *> &B, index_t *minimizer, index_t branch_id, QCFWriter* qcf_writer=nullptr);
         weight_t search_star(std::vector<Tree *> &input, std::vector<Node *> &A, std::vector<Node *> &B);
+        weight_t deep_search_from_3f1a(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer, index_t branch_id, QCFWriter* qcf_writer);
         weight_t search_3f1a(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer, index_t branch_id, QCFWriter* qcf_writer=nullptr);
         weight_t search_3f1a(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer);
         weight_t search_quard(std::vector<Tree *> &input, std::tuple<std::vector<Node *>, std::vector<Node *>, std::vector<Node *>, std::vector<Node *>> *quad, index_t* minimizer, index_t branch_id, QCFWriter* qcf_writer);
@@ -295,7 +298,7 @@ class SpeciesTree : public Tree {
 
         bool is_bucket_i_less_than_bucket_j(index_t partition_i, index_t partition_j, index_t pivot, Node* blob_node, std::vector<Tree *> gene_trees, size_t iter_limit, size_t &failed_counts);
         bool is_bucket_i_less_than_bucket_j(index_t partition_i, index_t partition_j, index_t pivot_index, Node* blob_node, std::unordered_map<quartet_t, std::array<weight_t, 3>> &qCFs_table, unsigned long int iter_limit, size_t &failed_counts);
-        Node *build_refinement(Node *root, std::unordered_set<Node *> false_positive);
+        Node *build_refinement(Node *root, const std::unordered_set<Node *> &false_positive);
         weight_t get_pvalue(std::vector<Tree *> &input, index_t *indices);
         weight_t get_pvalue_star(std::vector<Tree *> &input, index_t *indices);
         std::pair<Node *, std::vector<index_t>> hybrid_info_tree(Node *root, Dict *dict, std::unordered_set<Node *> &false_positive_alpha, std::unordered_set<Node *> &false_positive_beta);
