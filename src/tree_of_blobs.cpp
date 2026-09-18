@@ -1,7 +1,8 @@
 #if ENABLE_TOB
 #include "tree.hpp"
 #include "rlib_dirs.hpp"
-#include "riffle_sort.hpp"
+#include <random>
+#include <algorithm>
 
 void get_qCFs(std::vector<Tree *> &input, index_t *indices, weight_t *qCFs) {
     index_t temp[4];
